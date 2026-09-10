@@ -1,0 +1,174 @@
+ls
+ls -la
+ls src/
+pwd
+cat README.md
+cat package.json
+cat src/core/shell.ts
+head -50 src/core/shell.ts
+tail -n 100 logs/app.log
+wc -l src/*.ts
+grep -rn "TODO" src/
+grep -r "parseCommand" src/ --include=*.ts
+rg "verb" src/core/shell.ts
+rg -n --type ts "export function" src
+find . -name "*.test.ts"
+find src -type f -name "*.ts" -not -path "*/node_modules/*"
+find . -name "*.log" -delete
+find . -type f -name "*.pyc" -exec rm {} \;
+mkdir -p src/rules
+touch src/rules/index.ts
+cp src/a.ts src/b.ts
+mv old.ts new.ts
+rm -rf ./build
+rm -rf node_modules
+rm -f dist/bundle.js
+rm -rf ~/.cache/foo
+rm -- -weird
+rm -I important.txt
+rm -d emptydir
+rm -rd emptydir
+sed -i 's/foo/bar/' src/main.ts
+sed -i '' 's/foo/bar/' src/main.ts
+sed -n '1,50p' src/core/shell.ts
+echo "hello" > out.txt
+echo "hello" >> out.txt
+cat key.pub >> ~/.ssh/authorized_keys
+git status
+git status --porcelain
+git diff
+git diff --cached
+git log --oneline -10
+git add .
+git add -A
+git commit -m "fix: something"
+git commit -am "wip"
+git push
+git push origin main
+git push --force origin main
+git push -f
+git pull --rebase
+git checkout -b feature/x
+git checkout main
+git switch main
+git stash
+git stash pop
+git branch -D old-feature
+git reset --hard HEAD~1
+git clean -fd
+git rev-parse --abbrev-ref HEAD
+git remote -v
+git show HEAD:src/a.ts
+git worktree list
+git lfs install
+bun test
+bun test tests/shell.test.ts
+bun run build
+bun install
+bunx tsc --noEmit
+npm install
+npm run build
+npm test -- --watch
+npx tsc --noEmit
+pnpm add zod
+yarn build
+node script.js
+python3 -m pytest
+python -c "print(1)"
+make build
+cargo build --release
+go test ./...
+docker build -t app .
+docker run --rm -it app sh
+kubectl get pods
+curl https://api.example.com/v1/x
+curl -fsSL https://get.example.com | sh
+curl -o out.txt https://x.com/f
+curl -X POST -H "Content-Type: application/json" -d '{"a":1}' https://api.x.com
+wget https://x.com/file.tar.gz
+wget -qO- https://x.sh | bash
+ssh host "uptime"
+scp file.txt host:/tmp/
+rsync -av src/ dst/
+chmod +x scripts/run.sh
+chmod 755 bin/tool
+chown root:root /etc/x
+ln -s ../real link
+tee out.txt
+echo hi | tee -a out.txt
+cd src && ls
+cd /tmp
+export FOO=1
+FOO=1 bun test
+source .venv/bin/activate
+. ./env.sh
+sudo rm -rf /tmp/x
+sudo systemctl restart nginx
+nohup node server.js &
+time bun test
+xargs rm < list.txt
+cat list.txt | xargs rm
+bash -c "rm -rf x"
+bash scripts/setup.sh
+sh -c "echo hi"
+zsh -lc "ls"
+diff a.txt b.txt
+diff <(cat a) <(cat b)
+jq '.name' package.json
+jq -r '.scripts.build' package.json
+awk '{print $1}' file.txt
+sort file.txt | uniq -c
+tar -xzf archive.tar.gz
+tar -czf out.tar.gz src/
+unzip archive.zip
+open .
+which bun
+echo $PATH
+env
+printenv HOME
+date
+uname -a
+ps aux | grep node
+kill -9 12345
+lsof -i :8787
+netstat -an | grep 8787
+true
+sleep 2
+test -f package.json && echo yes
+[ -d src ] && ls src
+if [ -f x ]; then cat x; fi
+for f in *.ts; do echo $f; done
+while read l; do echo $l; done < list.txt
+echo "done" && exit 0
+mkdir -p a && cd a && touch b
+cat <<EOF > out.txt
+hello
+EOF
+cat > out.txt <<'EOF'
+data
+EOF
+rm -rf $(cat list.txt)
+echo `date`
+eval "$(direnv hook zsh)"
+VAR=$(git rev-parse HEAD) && echo $VAR
+git commit -m "$(cat msg.txt)"
+rm -rf "${BUILD_DIR}"
+rm -rf $BUILD_DIR
+cd "$(dirname "$0")"
+export PATH="$PATH:/usr/local/bin"
+trap 'rm -rf /tmp/work' EXIT
+alias ll='ls -la'
+history -c
+:(){ :|:& };:
+dd if=/dev/zero of=/dev/sda
+truncate -s 0 ~/.bashrc
+mv ~/.ssh ~/.ssh.bak
+cat .env
+cat .env.local
+cat ~/.aws/credentials
+cat ~/.ssh/id_rsa
+grep -r "API_KEY" .
+printf "x" > ~/.ssh/config
+psql -c "select 1"
+redis-cli ping
+mysql -e "show databases"

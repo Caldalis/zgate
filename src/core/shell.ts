@@ -65,6 +65,8 @@ type ArgRole =
 type Entry =
   | { readonly kind: "verb"; readonly verb: Verb; readonly role: ArgRole }
   | { readonly kind: "subcommand" } // git:看子命令
+  | { readonly kind: "find" } // find:verb 由表达式决定(-delete → delete)
+  | { readonly kind: "tar" } // tar:有 -c 是 write(打包),否则是 read(解包/列表)
   | { readonly kind: "silent" } // 只改 shell 自身状态,不产生 Action
   | { readonly kind: "shell" } // 解释器:-c 的实参是真正的命令,递归解析
   | { readonly kind: "opaque" }; // 语义未知,一律 exec
@@ -88,10 +90,15 @@ const CMD_TABLE: ReadonlyMap<string, Entry> = new Map<string, Entry>([
   ["grep", { kind: "verb", verb: "read", role: "grepLike" }],
   ["rg", { kind: "verb", verb: "read", role: "grepLike" }],
   ["ag", { kind: "verb", verb: "read", role: "grepLike" }],
-  ["find", { kind: "verb", verb: "read", role: "findPaths" }],
+  ["find", { kind: "find" }],
+  ["tar", { kind: "tar" }],
   ["fd", { kind: "verb", verb: "read", role: "grepLike" }],
   ["ls", { kind: "verb", verb: "read", role: "pathOnly" }],
   ["pwd", { kind: "verb", verb: "read", role: "pathOnly" }],
+  ["[", { kind: "verb", verb: "read", role: "pathOnly" }],
+  ["test", { kind: "verb", verb: "read", role: "pathOnly" }],
+  ["which", { kind: "verb", verb: "read", role: "pathOnly" }],
+  ["type", { kind: "verb", verb: "read", role: "pathOnly" }],
   ["wc", { kind: "verb", verb: "read", role: "allArgs" }],
   ["file", { kind: "verb", verb: "read", role: "pathOnly" }],
   ["stat", { kind: "verb", verb: "read", role: "pathOnly" }],
@@ -101,6 +108,24 @@ const CMD_TABLE: ReadonlyMap<string, Entry> = new Map<string, Entry>([
   ["df", { kind: "verb", verb: "read", role: "pathOnly" }],
   ["tree", { kind: "verb", verb: "read", role: "pathOnly" }],
   ["jq", { kind: "verb", verb: "read", role: "allArgs" }],
+  ["diff", { kind: "verb", verb: "read", role: "allArgs" }],
+  ["cmp", { kind: "verb", verb: "read", role: "allArgs" }],
+  ["awk", { kind: "verb", verb: "read", role: "allArgs" }],
+  ["uniq", { kind: "verb", verb: "read", role: "allArgs" }],
+  ["sort", { kind: "verb", verb: "read", role: "allArgs" }],
+  ["cut", { kind: "verb", verb: "read", role: "allArgs" }],
+  ["paste", { kind: "verb", verb: "read", role: "allArgs" }],
+  ["column", { kind: "verb", verb: "read", role: "allArgs" }],
+  ["xxd", { kind: "verb", verb: "read", role: "pathOnly" }],
+  ["md5sum", { kind: "verb", verb: "read", role: "pathOnly" }],
+  ["shasum", { kind: "verb", verb: "read", role: "pathOnly" }],
+  ["sha256sum", { kind: "verb", verb: "read", role: "pathOnly" }],
+  ["base64", { kind: "verb", verb: "read", role: "pathOnly" }],
+  ["strings", { kind: "verb", verb: "read", role: "pathOnly" }],
+  ["nl", { kind: "verb", verb: "read", role: "pathOnly" }],
+  ["od", { kind: "verb", verb: "read", role: "allArgs" }],
+  ["open", { kind: "verb", verb: "read", role: "pathOnly" }],
+  ["unzip", { kind: "verb", verb: "write", role: "allArgs" }],
 
   // write —— cp mv touch mkdir sed -i tee
   ["cp", { kind: "verb", verb: "write", role: "allArgs" }],
@@ -155,6 +180,20 @@ const CMD_TABLE: ReadonlyMap<string, Entry> = new Map<string, Entry>([
   ["docker", execEntry],
   ["kubectl", execEntry],
   ["systemctl", execEntry],
+  ["kill", { kind: "verb", verb: "exec", role: "allArgs" }],
+  ["pkill", { kind: "verb", verb: "exec", role: "allArgs" }],
+  ["killall", { kind: "verb", verb: "exec", role: "allArgs" }],
+  ["lsof", { kind: "verb", verb: "exec", role: "allArgs" }],
+  ["ss", { kind: "verb", verb: "exec", role: "allArgs" }],
+  ["netstat", { kind: "verb", verb: "exec", role: "allArgs" }],
+  ["ps", { kind: "verb", verb: "read", role: "allArgs" }],
+  ["date", { kind: "verb", verb: "read", role: "allArgs" }],
+  ["uname", { kind: "verb", verb: "read", role: "allArgs" }],
+  ["printenv", { kind: "verb", verb: "read", role: "allArgs" }],
+  // echo 不读也不写文件,它的输出目标由重定向决定。
+  // 归 exec(表外默认)是对的:给它编个 read 会让 §4.5 的 PASS 白名单
+  // 误以为"读了仓库内的文件"。
+  ["echo", execEntry],
   ["brew", execEntry],
   ["apt", execEntry],
   ["apt-get", execEntry],
@@ -171,11 +210,16 @@ const CMD_TABLE: ReadonlyMap<string, Entry> = new Map<string, Entry>([
   ["unalias", { kind: "silent" }],
   ["umask", { kind: "silent" }],
   ["ulimit", { kind: "silent" }],
-  ["trap", { kind: "silent" }],
+  // trap 的参数是「以后要执行的命令」,不是当下发生的事。
+  // 归 silent 等于连一条日志都不留(§15.2 体检时它是唯一一条"什么都不产出"
+  // 的可疑项);归 opaque 至少让规则层看见这儿有个 trap。
+  // 刻意不递归:延迟执行的命令没有当下的 turn_id,递归出来会编造一条假时刻。
+  ["trap", { kind: "opaque" }],
   ["history", { kind: "silent" }],
   ["true", { kind: "silent" }],
   ["false", { kind: "silent" }],
   [":", { kind: "silent" }],
+  ["printf", { kind: "verb", verb: "write", role: "allArgs" }],
   ["sleep", { kind: "silent" }],
   ["wait", { kind: "silent" }],
   ["exit", { kind: "silent" }],
@@ -238,6 +282,25 @@ const GIT_ROLE: ReadonlyMap<string, ArgRole> = new Map<string, ArgRole>([
   ["apply", "pathOnly"],
 ]);
 
+/**
+ * shell 复合语句的开头关键字。
+ *
+ * 这些不是命令,但它们的**后面**跟着真正的命令。归 exec 等于把整块内容
+ * 变成规则层看不见的盲区(`for f in *.log; do rm -f $f; done` 会变成
+ * 一条空的 exec);归 null 等于每次打断一次 —— 按项目简介的判据,
+ * 那是产品失败。所以正确的做法是剥掉关键字,继续解析剩下的。
+ *
+ * 为什么 `[` / `[[` 不在这里:它们是 test 内建,已经单独进表归 read 了。
+ * 收进来会把它后面的路径丢掉,正好丢掉 §4.5 PASS 白名单需要的东西。
+ */
+const SHELL_KEYWORDS = new Set([
+  "if", "then", "elif", "else", "fi",
+  "for", "while", "until", "do", "done",
+  "case", "esac", "in",
+  "{", "}", "(", ")",
+  "!", "time",
+]);
+
 /** 破坏性前置词:剥掉自己继续解析后面那个命令 */
 const WRAPPERS = new Set([
   "sudo", "doas", "env", "nohup", "time", "xargs", "command", "builtin",
@@ -256,7 +319,7 @@ const WRAPPERS = new Set([
  * 每条命令的专有选项在 PER_CMD_VALUE_SHORT 里补(不合并进这个集合,
  * 否则 `grep -e` 和 `rm -f` 会互相污染)。
  */
-const VALUE_SHORT = new Set(["o", "O", "A", "B", "C", "m", "t", "u", "g", "d", "I"]);
+const VALUE_SHORT = new Set(["o", "O", "A", "B", "C", "m", "t", "u", "g"]);
 
 /** 逐命令补充的「吃值短选项」 */
 const PER_CMD_VALUE_SHORT: ReadonlyMap<string, ReadonlySet<string>> = new Map([
@@ -270,6 +333,12 @@ const PER_CMD_VALUE_SHORT: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ["head", new Set(["n"])],
   ["tail", new Set(["n"])],
   ["chmod", new Set(["t"])],
+  ["du", new Set(["d"])],
+  ["split", new Set(["d"])],
+  ["cut", new Set(["d", "f"])],
+  ["split", new Set(["d", "l", "a", "b", "n"])],
+  ["sort", new Set([])],
+  ["uniq", new Set([])],
   ["dd", new Set([])],
 ]);
 
@@ -289,10 +358,6 @@ const NON_TARGET_POSITIONAL: ReadonlyMap<string, number> = new Map([
   ["chown", 1],
   ["dd", 1],
 ]);
-
-/** 选项之后还要不要多收操作数(tee 的 FILE 在 `--` 之后语义上仍是文件) */
-const EMPTY_MARK = 0;
-void EMPTY_MARK;
 
 /** find 的表达式起点 —— 到此为止,后面不是路径 */
 const FIND_EXPR = new Set([
@@ -532,6 +597,17 @@ function tokenize(segment: string): Token[] | null {
     if (c === "<" && at(i + 1) === "(") return null;
     if (c === ">" && at(i + 1) === "(") return null;
 
+    // `(` `)` `{` `}` 是语法括号,自成一个 token。
+    // 不拆的话 `:(){ :|:& };:` 的 `:(){` 会变成一个"像命令名但不是"的
+    // 东西,整条命令于是判失败 —— 而它其实是 fork bomb。
+    // 拆开之后 `:` 是 silent 内建、`()` / `{` 是关键字,各归各位。
+    if (c === "(" || c === ")" || c === "{" || c === "}") {
+      push(null);
+      tokens.push({ text: c, quoted: false, fd: null });
+      i += 1;
+      continue;
+    }
+
     // 重定向算子
     if (c === ">" || c === "<") {
       let op = c;
@@ -694,7 +770,37 @@ function resolveVerb(tokens: readonly Token[], depth = 0): Resolved[] | null {
     return resolveVerb(inner, depth + 1);
   }
 
-  const entry = CMD_TABLE.get(head);
+  // 函数定义头(`name()` / `name ()`)只声明,不执行。
+  // 括号现在会被拆成独立 token(`f` `(` `)` `{`),所以这里看的是
+  // 「head 后面紧跟 `()`」这个形状,而不是靠一个 token 里的正则。
+  // 体会被 `;` / `&` 切分,但声明本身不产出 Action —— 延迟执行没有当下的
+  // turn_id,编造一条会污染日志。fork bomb 的危险性由 §4.5 的 pre 规则
+  // 对 raw command 做模式匹配兜住(见 D2.11)。
+  if (rest.length >= 2 && rest[0]!.text === "(" && rest[1]!.text === ")") {
+    return [{ kind: "silent" }];
+  }
+
+  // 复合语句关键字:剥掉看后面,而不是整块放弃
+  if (SHELL_KEYWORDS.has(head)) {
+    // `case x in` 的 `in` 后面是模式,不是命令;`do` / `then` 后面才是。
+    // 统一按"剥掉看后面"处理,多解出来的那点噪声由规则层过滤。
+    if (rest.length === 0) return [{ kind: "silent" }];
+    return resolveVerb(rest, depth + 1);
+  }
+
+  // 命令名是个变量(`$CMD -rf /`)—— 不展开变量就永远不知道它是什么(§7/D2.4)。
+  // 归 exec 而不是 null:它确实是"要跑一个东西",exec 是诚实的描述;
+  // 归 null 会让 `case $x in ... esac` 这类日常写法整条变打断(简介的判据:
+  // 那是产品失败,不是保守)。
+  if (/^\$[A-Za-z_{]/.test(head)) return [{ kind: "exec" }];
+
+  const name = basename(head);
+
+  // 命令名本身就不像命令(纯数字、含 `=`、空)—— 说明前面某一层剥错了,
+  // 这条命令我们其实没看懂。落 null ⇒ unknown ⇒ SOFT,比落 exec 诚实。
+  if (!LOOKS_LIKE_COMMAND.test(name)) return null;
+
+  const entry = CMD_TABLE.get(name);
   if (entry === undefined) {
     // 表外可执行文件 → exec(§7)
     return [{ kind: "exec" }];
@@ -707,6 +813,10 @@ function resolveVerb(tokens: readonly Token[], depth = 0): Resolved[] | null {
       return [{ kind: "exec" }];
     case "subcommand":
       return resolveGit(rest);
+    case "find":
+      return [resolveFind(rest)];
+    case "tar":
+      return [resolveTar(rest)];
     case "shell":
       return resolveShell(rest);
     case "verb": {
@@ -714,6 +824,57 @@ function resolveVerb(tokens: readonly Token[], depth = 0): Resolved[] | null {
       return [{ kind: "verb", verb, targets: extractTargets(entry.role, rest, head) }];
     }
   }
+}
+
+/**
+ * find 的 verb 不能由命令名定,得看表达式。
+ *
+ * `find . -name "*.log" -delete` 现在是 read(.),而 §4.5 的 post 轮把
+ * 「read + 目标在仓库内」列进了显式 PASS 白名单 —— 这是全部漏判里
+ * 唯一一条「不是没看见,而是被主动放行」的。所以它单独走一条路。
+ *
+ * -delete / -exec / -execdir / -ok 出现即改变 verb;
+ * 路径仍然只取表达式之前的那些(还是 findPaths 的老规则)。
+ */
+function resolveFind(args: readonly Token[]): Resolved {
+  let verb: Verb = "read";
+  for (const tok of args) {
+    if (tok.quoted) continue;
+    if (tok.text === "-delete") {
+      verb = "delete";
+      break;
+    }
+    if (tok.text === "-exec" || tok.text === "-execdir" || tok.text === "-ok" || tok.text === "-okdir") {
+      verb = "exec";
+      break;
+    }
+  }
+  return { kind: "verb", verb, targets: extractTargets("findPaths", args, "find") };
+}
+
+/**
+ * tar 的 verb 取决于模式:`-czf` 打包是 write,`-xzf` 解包是 write(会落地文件),
+ * `-tf` 列表是 read。
+ *
+ * 解包为什么算 write:它往磁盘写文件,而且路径由归档内容决定 ——
+ * 正是 §1 说的"只有模型能判断"的那类不确定性。归 write 让规则层至少看一眼。
+ */
+function resolveTar(args: readonly Token[]): Resolved {
+  let mode: "create" | "extract" | "list" | null = null;
+  for (const tok of args) {
+    if (tok.quoted || !tok.text.startsWith("-") || tok.text.startsWith("--")) {
+      if (tok.text === "--create") mode = "create";
+      if (tok.text === "--extract" || tok.text === "--get") mode = "extract";
+      if (tok.text === "--list") mode = "list";
+      continue;
+    }
+    const body = tok.text.slice(1);
+    if (body.includes("c")) mode = "create";
+    else if (body.includes("x")) mode = "extract";
+    else if (body.includes("t")) mode = "list";
+  }
+  const verb: Verb = mode === "list" || mode === null ? "read" : "write";
+  return { kind: "verb", verb, targets: extractTargets("allArgs", args, "tar") };
 }
 
 /**
@@ -838,6 +999,27 @@ function isAssignment(tok: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok);
 }
 
+/**
+ * 命令名取 basename:`/bin/rm`、`/usr/bin/curl`、`./bin/rm`、`~/bin/rm` 都归到 `rm`。
+ *
+ * 为什么不 basename 是错的:带路径写命令名是脚本和 hook 里的常见写法,
+ * 而 `/bin/rm -rf /` 落 exec 等于规则层什么都看不见。
+ * 代价是 `./build/myapp` 这类同名自定义脚本会被认成系统命令 —— 方向是多看一眼。
+ */
+function basename(head: string): string {
+  const slash = head.lastIndexOf("/");
+  return slash === -1 ? head : head.slice(slash + 1);
+}
+
+/**
+ * 命令名得像命令。不满足就别硬猜 —— 落未知比落 exec 诚实。
+ *
+ * 这一条是 P1-2 的修法:`nice -n 10 rm -rf /` 为什么曾经变成 exec 无目标?
+ * 因为 `-n` 不在选项表里,没被当成"吃值",于是 `10` 被当成了命令名。
+ * `10` 不像命令,这里就该拒绝,而不是给一个空的 exec。
+ */
+const LOOKS_LIKE_COMMAND = /^(?:\[|[A-Za-z_:][A-Za-z0-9_.+-]*)$/;
+
 // ---------------------------------------------------------------------------
 // 4. 取目标
 // ---------------------------------------------------------------------------
@@ -846,7 +1028,6 @@ function extractTargets(
   role: ArgRole,
   args: readonly Token[],
   cmd: string,
-  root = 0,
 ): ResourceSpec[] {
   const ops = operands(args, cmd);
 
@@ -854,7 +1035,7 @@ function extractTargets(
     case "allArgs":
     case "pathOnly": {
       // 按 positionals 数量推断目标时,命令自己先占掉几个位置参数
-      const drop = (NON_TARGET_POSITIONAL.get(cmd) ?? 0) - root;
+      const drop = NON_TARGET_POSITIONAL.get(cmd) ?? 0;
       return ops.slice(Math.max(drop, 0)).map(toSpec);
     }
 
@@ -862,7 +1043,7 @@ function extractTargets(
       // -e/-f 已经给了模式,位置参数就全是文件
       const patternGiven = args.some((a) => /^-[A-Za-z]*[ef]/.test(a.text) || a.text === "--regexp" || a.text === "--file");
       // 否则第一个非选项是模式,之后才是文件
-      const drop = patternGiven ? 0 : 1 - root;
+      const drop = patternGiven ? 0 : 1;
       return ops.slice(Math.max(drop, 0)).map(toSpec);
     }
 
