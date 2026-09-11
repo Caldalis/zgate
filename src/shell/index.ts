@@ -101,8 +101,8 @@ function analyzeSegment(rawTokens: readonly Token[]): Partial[] | null {
       continue;
     }
 
-    if (t.startsWith(">")) {
-      // `2>&1` / `>&2` / `&>file`
+    if (t.startsWith(">") || t.startsWith("&>")) {
+      // `2>&1` / `>&2` / `&>file` —— 全是 fd 复制,不产生写目标
       const next = rawTokens[i + 1];
       const fdDup =
         /^>&\d+$/.test(t) ||

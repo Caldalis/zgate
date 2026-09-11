@@ -143,8 +143,23 @@ export function splitTopLevel(input: string): string[] | null {
       continue;
     }
     if (c === "|") {
+      // `>|` 是重定向算子(noclobber 下强制覆盖),不是管道。
+      // 上一轮修语料时发现:`echo hi >| o.txt` 因为这里被 `|` 抢先切走,
+      // 整条落 unknown —— 良性命令变打断。
+      const prev = i === 0 ? "" : at(i - 1);
+      if (prev === ">") {
+        cur += c;
+        i += 1;
+        continue;
+      }
       flush();
       i += at(i + 1) === "|" || at(i + 1) === "&" ? 2 : 1;
+      continue;
+    }
+    if (c === "&" && at(i + 1) === ">") {
+      // `&>` / `&>>` 是重定向,不是后台执行
+      cur += c;
+      i += 1;
       continue;
     }
     if (c === "&" && (at(i + 1) === "" || at(i + 1) === " " || at(i + 1) === "\t")) {
@@ -228,6 +243,20 @@ export function tokenize(segment: string): Token[] | null {
       continue;
     }
 
+    // `&>` / `&>>`:stdout 与 stderr 一起重定向,一个算子。
+    // 不认的话会被拆成 `&`(后台符号)+ `>`(重定向),`rm b &> f` 的 f 就丢了。
+    if (c === "&" && at(i + 1) === ">") {
+      let op = "&>";
+      i += 2;
+      while (i < segment.length && at(i) === ">") {
+        op += ">";
+        i += 1;
+      }
+      push(null);
+      tokens.push({ text: op, quoted: false, fd: null });
+      continue;
+    }
+
     if (c === "\\") {
       if (i + 1 >= segment.length) return null;
       cur += at(i + 1);
@@ -245,6 +274,19 @@ export function tokenize(segment: string): Token[] | null {
     // 不拆的话 `:(){ :|:& };:` 的 `:(){` 会变成一个"像命令名但不是"的
     // 东西,整条命令于是判失败 —— 而它其实是 fork bomb。
     // 拆开之后 `:` 是 silent 内建、`()` / `{` 是关键字,各归各位。
+    //
+    // 例外:`${VAR}` 的 `{` `}` 是变量展开的一部分,不是语法括号。
+    // 不排除的话 `rm -rf ${BUILD_DIR}` 会被拆成 `$` `{` `BUILD_DIR` `}`,
+    // 删除目标从一个路径变成四个碎片 —— 规则层再也认不出它是什么。
+    if (c === "{" && cur.endsWith("$")) {
+      // `${...}`:整个展开式合成一个 token,和 `$VAR` 同样处理
+      let j = i + 1;
+      while (j < segment.length && at(j) !== "}") j += 1;
+      if (j >= segment.length) return null; // `${` 没闭合
+      cur += segment.slice(i, j + 1);
+      i = j + 1;
+      continue;
+    }
     if (c === "(" || c === ")" || c === "{" || c === "}") {
       push(null);
       tokens.push({ text: c, quoted: false, fd: null });
@@ -252,7 +294,12 @@ export function tokenize(segment: string): Token[] | null {
       continue;
     }
 
-    // 重定向算子
+    // 重定向算子。
+    //
+    // 要认全:`>` `>>` `>|` `>&` `<` `<<` `<&` `&>` `&>>`
+    // 之前漏了 `>|`(noclobber 下强制覆盖)和 `&>`(stdout+stderr 一起),
+    // 它们被拆成 `>` + `|` 和 `&` + `>`,于是下游看到的是一个管道或一个
+    // 后台符号 —— `echo hi >| o.txt` 整条落 unknown,`rm b &> f` 的目标丢了。
     if (c === ">" || c === "<") {
       let op = c;
       i += 1;
@@ -260,9 +307,21 @@ export function tokenize(segment: string): Token[] | null {
         op += at(i);
         i += 1;
       }
-      if (at(i) === "&" && at(i + 1) === ">") {
-        op += "&>";
-        i += 2; // &>file
+      // `>|`:强制覆盖,仍是一个重定向算子(不是 `>` 加上一个管道)
+      if (op === ">" && at(i) === "|") {
+        op = ">|";
+        i += 1;
+      }
+      // `>&` / `<&`:后面跟 fd 或文件名
+      if (op === ">" || op === "<") {
+        if (at(i) === "&") {
+          op += "&";
+          i += 1;
+          while (i < segment.length && at(i) === ">") {
+            op += ">";
+            i += 1;
+          }
+        }
       }
       // 紧贴重定向的数字是 fd(`2>` / `2>&1`),不是参数。
       // 只有"数字 → 这个重定向 → 数字或 &数字"才是 fd 复制;
