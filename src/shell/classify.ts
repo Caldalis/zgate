@@ -15,7 +15,7 @@
 //   - 不碰文件系统、不 spawn、不判断危险与否
 //   - 不展开变量。命令名是 `$CMD` 时只能老实说"不知道",交给 exec/规则层
 
-import type { Verb } from "./action.ts";
+import type { Verb } from "../core/action.ts";
 
 /** 一个待裁决的资源。`raw` 是 agent 给的原始字符串,本层绝不规范化。 */
 export interface ResourceSpec {

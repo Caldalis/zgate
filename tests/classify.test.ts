@@ -18,7 +18,7 @@ import {
   LOOKS_LIKE_COMMAND,
   tarVerb,
   type ClassifyToken,
-} from "../src/core/classify.ts";
+} from "../src/shell/classify.ts";
 
 /** 把 ["-rf", "x"] 这样写法的参数变成 token;用 `-` 前缀自动标成未引用 */
 function toks(...args: string[]): ClassifyToken[] {

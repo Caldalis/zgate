@@ -12,7 +12,7 @@
 // 的印象列的,不是真实采样。§15.7 的 journal 跑起来之后应该换成从
 // ~/.zgate/journal/ 捞的真实命令 —— 那个才是本项目自己的数字。
 
-import { parseCommand } from "../../src/core/shell.ts";
+import { parseCommand } from "../../src/shell/index.ts";
 
 const text = await Bun.file(new URL("./commands.txt", import.meta.url)).text();
 const lines = text.split("\n").filter((l) => l.trim() !== "");

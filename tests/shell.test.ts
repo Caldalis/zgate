@@ -6,7 +6,7 @@
 // 宁可多回落,不可漏回落 —— 漏回落意味着一条危险命令被当成 exec 静默放行。
 
 import { describe, expect, test } from "bun:test";
-import { parseCommand, type ShellCommand } from "../src/core/shell.ts";
+import { parseCommand, type ShellCommand } from "../src/shell/index.ts";
 
 /** 解析必须成功,返回命令数组 */
 function ok(command: string): ShellCommand[] {
