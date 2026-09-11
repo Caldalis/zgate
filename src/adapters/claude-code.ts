@@ -152,17 +152,39 @@ export function toActions(input: HookInput, turnId: string): AdapterResult {
   if (toolName === "Task") return [];
 
   // Bash:Bash 是万能逃逸口(§7),它的 verb 和 targets 都由 shell 解析决定。
-  // 解析失败(null)时**必须**产出一条 verb: "unknown" 的 Action 而不是空数组 ——
-  // §4.2 要求解析失败落 SOFT,空数组会变成放行。这是两者的分界线。
+  //
+  // 三种产出,分界是安全要求,不是风格:
+  //
+  //   parsed === null      解析失败($(...) / eval / 文法错)→ 一条 unknown
+  //                        ⇒ §4.2 ⇒ SOFT ⇒ ask
+  //   parsed.length === 0  解析成功但零条命令(:(){ :|:& };: / 纯函数定义)
+  //                        → 也一条 unknown ⇒ SOFT ⇒ ask
+  //   parsed.length > 0    每条命令一个 Action,command 只在 exec 时填
+  //
+  // 第二种是**必须**的:空数组会在管线里被当成"没有动作可判"而放行。
+  // 实测 `:(){ :|:& };:` 解析出来正是 [],而它是 §4.5 pre 轮点名的第一条
+  // HARD_DENY 模式。没有这条 Action,那条规则连 match 的机会都没有。
   if (toolName === "Bash") {
     const command = asString(toolInput["command"]);
+    // 输入里压根没有 command 字段 —— 这不是"命令看不懂",是真的没东西可判。
     if (command === null) return [];
+
     const parsed = parseCommand(command);
-    if (parsed === null) {
+    if (parsed === null || parsed.length === 0) {
       return [makeAction("unknown", [], command, toolName, toolInput, agent, cwd, turnId)];
     }
     return parsed.map((c) =>
-      makeAction(c.verb, c.targets.map((t) => ({ kind: t.kind, raw: t.raw })), command, toolName, toolInput, agent, cwd, turnId),
+      makeAction(
+        c.verb,
+        c.targets.map((t) => ({ kind: t.kind, raw: t.raw })),
+        // §2.1 的字面:command 只在 verb === "exec" 时是原始命令行,否则 null。
+        c.verb === "exec" ? command : null,
+        toolName,
+        toolInput,
+        agent,
+        cwd,
+        turnId,
+      ),
     );
   }
 
@@ -268,10 +290,15 @@ export function toHookResponse(decision: Decision): HookResponse {
 // ── TRIVIAL_EMPTY ─────────────────────────────────────────────────
 // 空 Action 列表的含义,写给 §4 / §5 的实现者:
 //
-// 适配器返回 [] 只发生在两种情况 —— §10 的 Task(子 agent 会各自触发 hook),
-// 和 Bash 输入里没有 command 字段。两者都**不是**"命令看不懂"。
-// "看不懂"走的是 verb: "unknown"(见上面的 Bash 分支)。
+// 适配器返回 [] **只有两种情况** —— §10 的 Task(子 agent 会各自触发
+// hook),和 Bash 输入里压根没有 `command` 字段。两者都**不是**"命令看不懂"。
 //
-// 所以管线对空数组应当**放行**(source: "rule", rule_id: 记一条 PASS 规则),
-// 而不是落 SOFT。这条在 §4.2 的射程之外:§4.2 说的是"解析失败、
-// 动词未知、目标解析不出来",不包含"压根没有动作可判"。
+// "看不懂"走的是 verb: "unknown",有两条路进那里:
+//   ① 解析失败          —— $(...) / 反引号 / eval / 文法错
+//   ② 解析成功但零条命令 —— fork bomb、纯函数定义
+// ② 曾经被错放进空数组那一格,结果是 `:(){ :|:& };:` 被静默放行 ——
+// 而它是 §4.5 pre 轮 HARD_DENY 的第一条模式。见 D6.9。
+//
+// 所以管线对空数组应当**放行**(记一条 PASS),而不是落 SOFT。
+// 这条在 §4.2 的射程之外:§4.2 说的是"解析失败、动词未知、目标解析不出来",
+// 不包含"压根没有动作可判"。
