@@ -208,7 +208,14 @@ class WalkContext {
             const cmd = out[k]!;
             out[k] = {
               verb: cmd.verb,
-              targets: [...cmd.targets, ...this.pendingWrites.map((raw) => ({ kind: "file" as const, raw }))],
+              targets: [
+                ...cmd.targets,
+                ...this.pendingWrites.map((raw) => ({
+                  kind: "file" as const,
+                  raw,
+                  from: "redirect" as const,
+                })),
+              ],
             };
           }
         }

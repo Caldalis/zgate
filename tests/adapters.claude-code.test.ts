@@ -157,7 +157,15 @@ describe("§7 Bash → 多条 Action", () => {
       expect(acts.length, command).toBe(parsed.length);
       for (let i = 0; i < parsed.length; i++) {
         expect(acts[i]?.verb, command).toBe(parsed[i]?.verb);
-        expect([...(acts[i]?.targets ?? [])], command).toEqual([...(parsed[i]?.targets ?? [])]);
+        // 只比 §2.1 冻结的 kind/raw。`from`(arg / redirect)是 shell 层
+        // 内部给规则层做证据链用的,适配器按契约**必须丢掉**它 ——
+        // 见 D8.1:冻结类型里没有这个字段,也不该有。
+        expect(
+          (acts[i]?.targets ?? []).map((t) => ({ kind: t.kind, raw: t.raw })),
+          command,
+        ).toEqual(
+          (parsed[i]?.targets ?? []).map((t) => ({ kind: t.kind, raw: t.raw })),
+        );
       }
     }
   });

@@ -17,10 +17,23 @@
 
 import type { Verb } from "../core/action.ts";
 
+/**
+ * 目标的来源。**不是给适配器看的**(§2.1 的 Resource 只有 kind/raw),
+ * 是给规则层做证据链的:同一条命令里,`arg` 和 `redirect` 的严重程度不同 ——
+ * `echo x > ~/.ssh/authorized_keys` 的写目标来自重定向,它的 verb 是 exec
+ * 却被我们当成一次 write。
+ *
+ * 加这个字段的理由见 D8.1:规则层需要把「为什么判的」写进 reason,
+ * 而 `reason` 是要直接展示给用户的一行字。
+ */
+export type ResourceFrom = "arg" | "redirect";
+
 /** 一个待裁决的资源。`raw` 是 agent 给的原始字符串,本层绝不规范化。 */
 export interface ResourceSpec {
   readonly kind: "file" | "dir" | "url" | "unknown";
   readonly raw: string;
+  /** 缺省视为 "arg" —— 绝大多数目标来自位置参数。 */
+  readonly from?: ResourceFrom;
 }
 
 /**
