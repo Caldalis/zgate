@@ -17,24 +17,49 @@ export interface Token {
   readonly quoted: boolean;
   /** 紧贴在重定向前面的数字(如 `2>&1` 的 `2`),不是参数 */
   readonly fd: string | null;
+  /**
+   * 这个 token 是 `<<DELIM` 里的**分隔符本身**,不是普通参数。
+   *
+   * 为什么需要标记:heredoc 分隔符在文本上就是个单词(`EOF`),
+   * 光看文本无法和参数区分。不标记的话 `cat <<EOF > out.txt` 会变成
+   * `cat` 带三个参数(`EOF` `>` `out.txt`),既丢了重定向语义,
+   * 又把分隔符当成了文件路径。
+   */
+  readonly heredoc?: true;
 }
 
 // ---------------------------------------------------------------------------
 // 顶层切分 —— `;` `&&` `||` `|` `\n`,引号之外
 // ---------------------------------------------------------------------------
 
+/**
+ * 一个段落。文本 + 它的 heredoc 分隔符(如果有)。
+ *
+ * 为什么要带分隔符:heredoc 的分隔符在文本上就是个普通单词,
+ * `tokenize` 光看文本分不出它和参数的区别。切分阶段是唯一知道
+ * "哪个词是分隔符"的地方,所以由这里传下去。
+ */
+export interface Segment {
+  readonly text: string;
+  /** `<<EOF` 里的 `EOF`;没有 heredoc 时为 null */
+  readonly heredocDelimiter: string | null;
+}
+
 /** 失败(未闭合引号)返回 null */
-export function splitTopLevel(input: string): string[] | null {
-  const segments: string[] = [];
+export function splitTopLevel(input: string): Segment[] | null {
+  const segments: Segment[] = [];
   let cur = "";
   let quote: "'" | '"' | null = null;
   let i = 0;
+  /** 本段是不是以 heredoc 结尾,以及它的分隔符 */
+  let pendingDelim: string | null = null;
 
   const at = (n: number): string => input[n] ?? "";
 
   const flush = (): void => {
     const text = cur.trim();
-    if (text !== "") segments.push(text);
+    if (text !== "") segments.push({ text, heredocDelimiter: pendingDelim });
+    pendingDelim = null;
     cur = "";
   };
 
@@ -97,13 +122,28 @@ export function splitTopLevel(input: string): string[] | null {
         }
       }
       if (delim === "") return null; // `<<` 后面没分隔符 —— 畸形
-      cur += " " + delim + " "; // 只留分隔符本体, heredoc 目标不产生写目标
+      pendingDelim = delim;
+      // 算子本身要留在 token 流里(`<<`),否则 AST 只看到一个孤零零的
+      // 分隔符单词,没法知道它是重定向而不是参数。
+      // 正文仍然被吃掉 —— 那部分才是"不产生写目标"的原因。
+      const op = input.slice(i, j).replace(/\s+$/, "");
+      const opTok = op.startsWith("<<-") ? "<<-" : "<<";
+      cur += " " + opTok + " " + delim + " ";
       i = j;
-      // 吞掉正文:到下一行开头是 delim 的那一行为止
-      let k = i;
-      while (k < input.length && at(k) !== "\n") k += 1;
-      if (k >= input.length) return null; // 没有正文行 —— 畸形
-      k += 1;
+
+      // `<<EOF` 之后、换行之前,同一行上可能还有别的东西:
+      //   `cat <<EOF > out.txt`  ← `> out.txt` 是重定向,不能丢
+      //   `cat > out.txt <<EOF`  ← 那就没有尾巴
+      // 以前这里直接把整行当"正文行"跳过了,于是 `> out.txt` 被吞进正文,
+      // 写目标整个消失。现在把这一行的剩余部分交回主循环处理。
+      let sameLine = i;
+      while (sameLine < input.length && at(sameLine) !== "\n") sameLine += 1;
+      if (sameLine >= input.length) return null; // 没有正文行 —— 畸形
+      const restOfLine = input.slice(i, sameLine);
+      // 先把同行的剩余内容接回 cur,再跳过这一行
+      cur += restOfLine;
+      i = sameLine;
+      let k = i + 1;
       for (;;) {
         const lineEnd = input.indexOf("\n", k);
         const stop = lineEnd === -1 ? input.length : lineEnd;
@@ -132,38 +172,17 @@ export function splitTopLevel(input: string): string[] | null {
       }
     }
 
-    if (c === ";" || c === "\n") {
+    // 只在**换行**处切段落。
+    //
+    // `;` `&&` `||` `|` `&` 一律留给 tokenize + AST —— 它们是结构,
+    // 在切分阶段就切掉,树就永远看不到 `if … then … fi` 是一个整体。
+    // (曾经在这里切,结果 `if [ -f x ]; then cat x; fi` 被切成三段,
+    // if_statement 缺 fi,整条落 unknown。)
+    //
+    // 换行之所以仍然切:那是"两条独立的命令行"的边界,
+    // 且 heredoc 正文靠它划定。
+    if (c === "\n") {
       flush();
-      i += 1;
-      continue;
-    }
-    if (c === "&" && at(i + 1) === "&") {
-      flush();
-      i += 2;
-      continue;
-    }
-    if (c === "|") {
-      // `>|` 是重定向算子(noclobber 下强制覆盖),不是管道。
-      // 上一轮修语料时发现:`echo hi >| o.txt` 因为这里被 `|` 抢先切走,
-      // 整条落 unknown —— 良性命令变打断。
-      const prev = i === 0 ? "" : at(i - 1);
-      if (prev === ">") {
-        cur += c;
-        i += 1;
-        continue;
-      }
-      flush();
-      i += at(i + 1) === "|" || at(i + 1) === "&" ? 2 : 1;
-      continue;
-    }
-    if (c === "&" && at(i + 1) === ">") {
-      // `&>` / `&>>` 是重定向,不是后台执行
-      cur += c;
-      i += 1;
-      continue;
-    }
-    if (c === "&" && (at(i + 1) === "" || at(i + 1) === " " || at(i + 1) === "\t")) {
-      flush(); // 后台执行,等价于 `;`
       i += 1;
       continue;
     }
@@ -182,7 +201,7 @@ export function splitTopLevel(input: string): string[] | null {
 // ---------------------------------------------------------------------------
 
 /** 失败返回 null */
-export function tokenize(segment: string): Token[] | null {
+export function tokenize(segment: string, heredocDelimiter: string | null = null): Token[] | null {
   const tokens: Token[] = [];
   let cur = "";
   let curQuoted = false;
@@ -191,7 +210,14 @@ export function tokenize(segment: string): Token[] | null {
   const at = (n: number): string => segment[n] ?? "";
 
   const push = (fd: string | null): void => {
-    if (cur !== "" || curQuoted) tokens.push({ text: cur, quoted: curQuoted, fd });
+    if (cur !== "" || curQuoted) {
+      // heredoc 分隔符在文本上和普通单词无从区分,靠切分阶段传下来的信息标记
+      if (heredocDelimiter !== null && cur.trim() === heredocDelimiter) {
+        tokens.push({ text: cur, quoted: curQuoted, fd, heredoc: true });
+      } else {
+        tokens.push({ text: cur, quoted: curQuoted, fd });
+      }
+    }
     cur = "";
     curQuoted = false;
   };
@@ -254,6 +280,47 @@ export function tokenize(segment: string): Token[] | null {
       }
       push(null);
       tokens.push({ text: op, quoted: false, fd: null });
+      continue;
+    }
+
+    // `;` `&&` `||` `|` `&` 独立成 token。
+    //
+    // 它们同时也是 splitTopLevel 的分隔符,那为什么不靠切分就行?
+    // 因为**段落内部**仍会出现它们:`if [ -f x ]; then cat x; fi` 里的
+    // `];` 和 `x;`、`f(){ rm -rf /; }` 里的 `/;`。
+    // 切分只处理顶层,段落内部的这些必须在词法层拆开,AST 才看得到结构。
+    // (index.ts 的 analyzeSegment 里有一条"下一个 token 以 > 开头就补认 fd"
+    // 的补丁 —— 那正是没有这一层时打的手工补丁。)
+    if (c === ";" || c === "&" || c === "|") {
+      // `;;` 是 case 的项分隔符
+      if (c === ";" && at(i + 1) === ";") {
+        push(null);
+        tokens.push({ text: ";;", quoted: false, fd: null });
+        i += 2;
+        continue;
+      }
+      if (c === "&" && at(i + 1) === "&") {
+        push(null);
+        tokens.push({ text: "&&", quoted: false, fd: null });
+        i += 2;
+        continue;
+      }
+      if (c === "|" && at(i + 1) === "|") {
+        push(null);
+        tokens.push({ text: "||", quoted: false, fd: null });
+        i += 2;
+        continue;
+      }
+      // `|&` 等价于 `2>&1 |`
+      if (c === "|" && at(i + 1) === "&") {
+        push(null);
+        tokens.push({ text: "|&", quoted: false, fd: null });
+        i += 2;
+        continue;
+      }
+      push(null);
+      tokens.push({ text: c, quoted: false, fd: null });
+      i += 1;
       continue;
     }
 

@@ -25,45 +25,44 @@ function texts(segment: string): string[] {
   return toks(segment).map((t) => t.text);
 }
 
-/** 段落切分必须成功 */
+/** 段落切分必须成功,只取文本 */
 function seg(input: string): string[] {
   const r = splitTopLevel(input);
   if (r === null) throw new Error(`expected successful split: ${input}`);
-  return r;
+  return r.map((s) => s.text);
 }
 
 // ---------------------------------------------------------------------------
 // splitTopLevel —— 顶层切分
 // ---------------------------------------------------------------------------
 
-describe("lex.splitTopLevel: 分隔符", () => {
-  test("`;` `&&` `||` `|` `\\n` `&` 都切", () => {
-    expect(seg("a; b")).toEqual(["a", "b"]);
-    expect(seg("a && b")).toEqual(["a", "b"]);
-    expect(seg("a || b")).toEqual(["a", "b"]);
-    expect(seg("a | b")).toEqual(["a", "b"]);
+describe("lex.splitTopLevel: 段落边界是换行", () => {
+  // 设计变更(见 D5.x):`;` `&&` `||` `|` `&` **不再**在这里切。
+  // 它们是结构,留给 tokenize + AST —— 在切分阶段就切掉,树就永远
+  // 看不到 `if … then … fi` 是一个整体。
+  // 只有换行才是"两条独立命令行"的边界。
+  test("换行切段", () => {
     expect(seg("a\nb")).toEqual(["a", "b"]);
-    expect(seg("a & b")).toEqual(["a", "b"]);
+    expect(seg("rm a\nrm b")).toEqual(["rm a", "rm b"]);
   });
 
-  test("不切的时候返回单段", () => {
-    expect(seg("rm -rf ./build")).toEqual(["rm -rf ./build"]);
-  });
-
-  test("一次切多段", () => {
-    expect(seg("cd a && rm -rf b")).toEqual(["cd a", "rm -rf b"]);
-    expect(seg("ls; pwd; rm x")).toEqual(["ls", "pwd", "rm x"]);
-    expect(seg("curl x | sh")).toEqual(["curl x", "sh"]);
+  test("shell 算子不切 —— 它们由 AST 处理", () => {
+    expect(seg("a; b")).toEqual(["a; b"]);
+    expect(seg("a && b")).toEqual(["a && b"]);
+    expect(seg("a || b")).toEqual(["a || b"]);
+    expect(seg("a | b")).toEqual(["a | b"]);
+    expect(seg("cd a && rm -rf b")).toEqual(["cd a && rm -rf b"]);
+    expect(seg("curl x | sh")).toEqual(["curl x | sh"]);
   });
 
   test("空输入与纯空白 → 空数组", () => {
     expect(seg("")).toEqual([]);
     expect(seg("   \t \n ")).toEqual([]);
-    expect(seg(";;;")).toEqual([]);
+    expect(seg("\n\n")).toEqual([]);
   });
 
   test("每段被 trim", () => {
-    expect(seg("  a  ;  b  ")).toEqual(["a", "b"]);
+    expect(seg("  a  \n  b  ")).toEqual(["a", "b"]);
   });
 });
 
@@ -118,36 +117,45 @@ describe("lex.splitTopLevel: 重定向算子不切", () => {
     expect(seg("rm b &>> f")).toEqual(["rm b &>> f"]);
   });
 
-  test("普通重定向与管道各归各位", () => {
+  test("普通重定向与管道都留在同一段里", () => {
+    // 段落边界现在是换行,所以管道也在同一段 —— 由 AST 切
     expect(seg("echo hi > out.txt")).toEqual(["echo hi > out.txt"]);
-    expect(seg("ls | wc -l")).toEqual(["ls", "wc -l"]);
+    expect(seg("ls | wc -l")).toEqual(["ls | wc -l"]);
   });
 
   test("`>|` 与管道同时出现", () => {
-    expect(seg("echo hi >| o.txt | wc -l")).toEqual(["echo hi >| o.txt", "wc -l"]);
+    expect(seg("echo hi >| o.txt | wc -l")).toEqual(["echo hi >| o.txt | wc -l"]);
   });
 });
 
 describe("lex.splitTopLevel: heredoc", () => {
   test("正文被整体吃掉,不参与解析", () => {
-    expect(seg("cat <<EOF\nrm -rf /\nEOF")).toEqual(["cat  EOF"]);
+    // 算子 `<<` 保留(否则 AST 看不出这是重定向),正文消失
+    expect(seg("cat <<EOF\nrm -rf /\nEOF")).toEqual(["cat  << EOF"]);
   });
 
   test("heredoc 之后的命令照常切分", () => {
-    expect(seg("cat <<EOF\nx\nEOF\necho hi")).toEqual(["cat  EOF", "echo hi"]);
+    expect(seg("cat <<EOF\nx\nEOF\necho hi")).toEqual(["cat  << EOF", "echo hi"]);
   });
 
   test("引号包起来的分隔符", () => {
-    expect(seg("cat <<'EOF'\nrm -rf /\nEOF")).toEqual(["cat  EOF"]);
-    expect(seg('cat <<"EOF"\nrm -rf /\nEOF')).toEqual(["cat  EOF"]);
+    expect(seg("cat <<'EOF'\nrm -rf /\nEOF")).toEqual(["cat  << EOF"]);
+    expect(seg('cat <<"EOF"\nrm -rf /\nEOF')).toEqual(["cat  << EOF"]);
   });
 
   test("<<- 形式(缩进)", () => {
-    expect(seg("cat <<-EOF\n\trm -rf /\n\tEOF")).toEqual(["cat  EOF"]);
+    expect(seg("cat <<-EOF\n\trm -rf /\n\tEOF")).toEqual(["cat  <<- EOF"]);
   });
 
-  test("分隔符之前的多条命令不受影响", () => {
-    expect(seg("echo a; cat <<EOF\nx\nEOF")).toEqual(["echo a", "cat  EOF"]);
+  test("分隔符之前的命令在同一段里(边界是换行,不是分号)", () => {
+    expect(seg("echo a; cat <<EOF\nx\nEOF")).toEqual(["echo a; cat  << EOF"]);
+  });
+
+  test("分隔符被标记,可以和普通参数区分", () => {
+    const r = splitTopLevel("cat <<EOF\nx\nEOF")!;
+    expect(r[0]?.heredocDelimiter).toBe("EOF");
+    const t = tokenize(r[0]!.text, r[0]!.heredocDelimiter);
+    expect(t?.find((x) => x.heredoc)?.text).toBe("EOF");
   });
 
   test("heredoc 没闭合(缺正文行)→ 失败", () => {
@@ -163,7 +171,7 @@ describe("lex.splitTopLevel: heredoc", () => {
   });
 
   test("正文里的重定向/管道字面量不会污染切分", () => {
-    expect(seg("cat <<EOF\nrm -rf / | sh > x\nEOF")).toEqual(["cat  EOF"]);
+    expect(seg("cat <<EOF\nrm -rf / | sh > x\nEOF")).toEqual(["cat  << EOF"]);
   });
 });
 
@@ -259,9 +267,19 @@ describe("lex.tokenize: 重定向算子", () => {
     expect(texts("echo hi >| o.txt")).toEqual(["echo", "hi", ">|", "o.txt"]);
   });
 
-  test("`&>` / `&>>` 是一个算子", () => {
+  test("`&>` / `&>>` 是一个算子(不是 `&` + `>`)", () => {
     expect(texts("rm b &> f")).toEqual(["rm", "b", "&>", "f"]);
     expect(texts("rm b &>> f")).toEqual(["rm", "b", "&>>", "f"]);
+  });
+
+  test("`;` `&&` `||` `|` `&` 独立成 token", () => {
+    // 它们在顶层由 splitTopLevel 切,但**段落内部**仍会出现
+    // (`if [ -f x ]; then cat x; fi` 里的 `];`),所以词法层也要拆
+    expect(texts("cd a && rm -rf b")).toEqual(["cd", "a", "&&", "rm", "-rf", "b"]);
+    expect(texts("ls; pwd")).toEqual(["ls", ";", "pwd"]);
+    expect(texts("a | b")).toEqual(["a", "|", "b"]);
+    expect(texts("a || b")).toEqual(["a", "||", "b"]);
+    expect(texts("a & b")).toEqual(["a", "&", "b"]);
   });
 
   test("`2>` 的数字是独立 token,由下游认成 fd", () => {
@@ -295,9 +313,7 @@ describe("lex.tokenize: 重定向算子", () => {
 
 describe("lex.tokenize: 语法括号", () => {
   test("`(` `)` `{` `}` 各自成 token", () => {
-    // `;` 不是 tokenize 切分的东西(那是 splitTopLevel 的活),
-    // 所以它粘在相邻 token 上 —— `{ rm -rf /; }` 是一整段
-    expect(texts("f(){ rm -rf /; }")).toEqual(["f", "(", ")", "{", "rm", "-rf", "/;", "}"]);
+    expect(texts("f(){ rm -rf /; }")).toEqual(["f", "(", ")", "{", "rm", "-rf", "/", ";", "}"]);
   });
 
   test("不连写时也成 token", () => {
@@ -355,8 +371,6 @@ describe("lex: 危险命令在词法层必须留下痕迹", () => {
   });
 
   test("fork bomb 的词法形态", () => {
-    // `:|:&` 是一个 token(`|` 和 `&` 是 splitTopLevel 的分隔符,
-    // 到了 tokenize 这里已经是段落内部,不再有分隔语义)
-    expect(texts(":(){ :|:& };:")).toEqual([":", "(", ")", "{", ":|:&", "}", ";:"]);
+    expect(texts(":(){ :|:& };:")).toEqual([":", "(", ")", "{", ":", "|", ":", "&", "}", ";", ":"]);
   });
 });
