@@ -13,9 +13,13 @@
 // 参数解析手写,不用库:§1 说依赖只允许 zod,而这里需要的东西
 // (`argv.slice(2)` + 几个 `--key value`)不值一个依赖。
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { parseCommand } from "./shell/index.ts";
 import { ActionSchema, type Action } from "./core/action.ts";
-import { record, replayFile, flushJournal, journalDir, journalFileFor } from "./core/journal.ts";
+import { record, replayFile, flushJournal, journalDir, journalFileFor, shutdownJournal } from "./core/journal.ts";
 import { decideAction, DEFAULT_MODEL_TIMEOUT_MS } from "./core/pipeline.ts";
 import { clearCache } from "./core/cache.ts";
 import { toActions, type HookInput } from "./adapters/claude-code.ts";
@@ -35,8 +39,10 @@ const USAGE = `zgate ${VERSION} — 本地 Agent 工具调用决策网关
       把一天的 JSONL 还原成 {action, context, decision, outcome} 数组。
       不给文件名时用今天的。这是 M2 评测与 M4 训练数据的唯一入口。
 
-  zgate bench [--n N] [--json]
-      跑 N 次混合请求,打印 p50/p95/p99。
+  zgate bench [--n N] [--json] [--http]
+      跑 N 次混合请求,打印 p50/p95/p99。默认量进程内管线;
+      --http 起一个真的 daemon(端口 0),经 HTTP 打 /hook/claude-code,
+      量的是 Claude Code 看到的端到端延迟。
 
   zgate --help / --version
 `;
@@ -219,11 +225,55 @@ function percentile(sorted: readonly number[], p: number): number {
   return sorted[idx] ?? 0;
 }
 
-function cmdBench(args: Args): number {
-  const n = Number(flagString(args, "n", "1000"));
-  const asJson = args.flags.get("json") === true;
-  const cwd = flagString(args, "cwd", process.cwd());
+interface Summary {
+  readonly p50: number;
+  readonly p95: number;
+  readonly p99: number;
+  readonly max: number;
+}
 
+function summarize(xs: number[]): Summary {
+  xs.sort((a, b) => a - b);
+  return {
+    p50: percentile(xs, 0.5),
+    p95: percentile(xs, 0.95),
+    p99: percentile(xs, 0.99),
+    max: xs[xs.length - 1] ?? 0,
+  };
+}
+
+/** 两种模式共用的输出。返回值是退出码:§13 的两条预算任一不达即 1。 */
+function reportBench(
+  mode: "pipeline" | "http",
+  n: number,
+  cwd: string,
+  c: Summary,
+  w: Summary,
+  asJson: boolean,
+): number {
+  const ok = c.p50 < 5 && c.p99 < 30;
+  if (asJson) {
+    process.stdout.write(JSON.stringify({ mode, n, cold: c, warm: w, budget_ok: ok }, null, 2) + "\n");
+    return ok ? 0 : 1;
+  }
+  const f = (x: number) => x.toFixed(3).padStart(8);
+  const title = mode === "http" ? "HTTP 端到端(含 body 解析与 hook 响应)" : "进程内管线";
+  process.stdout.write(`zgate bench  mode=${title}  n=${n}  cwd=${cwd}\n\n`);
+  process.stdout.write(`               p50      p95      p99      max\n`);
+  process.stdout.write(`冷(无缓存) ${f(c.p50)} ${f(c.p95)} ${f(c.p99)} ${f(c.max)}   ms\n`);
+  process.stdout.write(`热(带缓存) ${f(w.p50)} ${f(w.p95)} ${f(w.p99)} ${f(w.max)}   ms\n\n`);
+  process.stdout.write(`§13 预算:  p50 < 5ms   p99 < 30ms\n`);
+  process.stdout.write(`冷路径:    p50 ${c.p50 < 5 ? "✓" : "✗"}   p99 ${c.p99 < 30 ? "✓" : "✗"}\n`);
+  if (mode === "pipeline") {
+    process.stdout.write(`\n这是**进程内**管线耗时,不含 HTTP 与 body 解析;加 --http 量端到端。\n`);
+  } else {
+    process.stdout.write(`\n这是 loopback 上 fetch 往返的耗时,Claude Code 看到的延迟不会低于它。\n`);
+  }
+  return ok ? 0 : 1;
+}
+
+/** 进程内:直接调管线。量的是规则 + 探测本身。 */
+function benchPipeline(n: number, cwd: string): { cold: Summary; warm: Summary } {
   // 先跑一遍预热(填充 git 探针缓存、让 JIT 稳定),再计时。
   for (let i = 0; i < 50; i += 1) {
     clearCache();
@@ -233,7 +283,6 @@ function cmdBench(args: Args): number {
 
   const cold: number[] = [];
   const warm: number[] = [];
-
   for (let i = 0; i < n; i += 1) {
     const command = BENCH_COMMANDS[i % BENCH_COMMANDS.length] ?? "git status";
     const actions = actionsFor(command, cwd);
@@ -249,41 +298,84 @@ function cmdBench(args: Args): number {
     for (const a of actions) decideAction(a);
     warm.push(performance.now() - t0);
   }
+  return { cold: summarize(cold), warm: summarize(warm) };
+}
 
-  cold.sort((a, b) => a - b);
-  warm.sort((a, b) => a - b);
+/**
+ * 端到端:在本进程起一个真的 daemon(端口 0),用 fetch 打
+ * `/hook/claude-code`,body 就是 Claude Code 会发的那份。
+ *
+ * 日志写到临时目录 —— bench 的几千条决策不该混进 ~/.zgate/journal,
+ * 那是训练数据。server 与 bench 在同一进程,所以"冷"仍然可以靠
+ * `clearCache()` 实现,不需要额外的管理端点。
+ */
+async function benchHttp(n: number, cwd: string): Promise<{ cold: Summary; warm: Summary }> {
+  const dir = mkdtempSync(join(tmpdir(), "zgate-bench-journal-"));
+  const prevJournal = process.env["ZGATE_JOURNAL_DIR"];
+  process.env["ZGATE_JOURNAL_DIR"] = dir;
+  const server = createServer(defaultConfig({ port: 0 }));
+  const url = `http://127.0.0.1:${server.port}/hook/claude-code`;
 
-  const summary = (xs: readonly number[]) => ({
-    p50: percentile(xs, 0.5),
-    p95: percentile(xs, 0.95),
-    p99: percentile(xs, 0.99),
-    max: xs[xs.length - 1] ?? 0,
-  });
-  const c = summary(cold);
-  const w = summary(warm);
+  const fire = async (command: string): Promise<void> => {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        session_id: "bench",
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_input: { command },
+        cwd,
+      }),
+    });
+    await res.json();
+  };
 
-  if (asJson) {
-    process.stdout.write(JSON.stringify({ n, cold: c, warm: w }, null, 2) + "\n");
-    return 0;
+  try {
+    for (let i = 0; i < 50; i += 1) {
+      await fire(BENCH_COMMANDS[i % BENCH_COMMANDS.length] ?? "git status");
+    }
+    const cold: number[] = [];
+    const warm: number[] = [];
+    for (let i = 0; i < n; i += 1) {
+      const command = BENCH_COMMANDS[i % BENCH_COMMANDS.length] ?? "git status";
+      clearCache();
+      let t0 = performance.now();
+      await fire(command);
+      cold.push(performance.now() - t0);
+
+      t0 = performance.now();
+      await fire(command);
+      warm.push(performance.now() - t0);
+    }
+    return { cold: summarize(cold), warm: summarize(warm) };
+  } finally {
+    shutdownJournal();
+    void server.stop(true);
+    if (prevJournal === undefined) delete process.env["ZGATE_JOURNAL_DIR"];
+    else process.env["ZGATE_JOURNAL_DIR"] = prevJournal;
+    rmSync(dir, { recursive: true, force: true });
   }
+}
 
-  const f = (x: number) => x.toFixed(3).padStart(8);
-  process.stdout.write(`zgate bench  n=${n}  cwd=${cwd}\n\n`);
-  process.stdout.write(`               p50      p95      p99      max\n`);
-  process.stdout.write(`冷(无缓存) ${f(c.p50)} ${f(c.p95)} ${f(c.p99)} ${f(c.max)}   ms\n`);
-  process.stdout.write(`热(带缓存) ${f(w.p50)} ${f(w.p95)} ${f(w.p99)} ${f(w.max)}   ms\n\n`);
-  process.stdout.write(`§13 预算:  p50 < 5ms   p99 < 30ms\n`);
-  const ok = c.p50 < 5 && c.p99 < 30;
-  process.stdout.write(`冷路径:    p50 ${ok ? "✓" : "✗"}   p99 ${c.p99 < 30 ? "✓" : "✗"}\n`);
-  process.stdout.write(`\n注意这是**进程内**管线耗时,不含 HTTP 与 body 解析。\n`);
-  return ok ? 0 : 1;
+function cmdBench(args: Args): number | Promise<number> {
+  const n = Number(flagString(args, "n", "1000"));
+  const asJson = args.flags.get("json") === true;
+  const cwd = flagString(args, "cwd", process.cwd());
+
+  if (args.flags.get("http") === true) {
+    return benchHttp(n, cwd).then(({ cold, warm }) => reportBench("http", n, cwd, cold, warm, asJson));
+  }
+  const { cold, warm } = benchPipeline(n, cwd);
+  return reportBench("pipeline", n, cwd, cold, warm, asJson);
 }
 
 // ---------------------------------------------------------------------------
 // 入口
 // ---------------------------------------------------------------------------
 
-export function main(argv: readonly string[]): number {
+/** 只有 `bench --http` 是异步的(要 await fetch);其余命令同步返回退出码。 */
+export function main(argv: readonly string[]): number | Promise<number> {
   const args = parseArgs(argv);
   const cmd = args.positional[0];
 
@@ -324,7 +416,7 @@ export function main(argv: readonly string[]): number {
 
 // 直接执行时跑 main;被 import 时不跑(测试要 import 这里的函数)。
 if (import.meta.main) {
-  const code = main(process.argv.slice(2));
+  const code = await main(process.argv.slice(2));
   // serve 不返回;其余命令结束前把日志写完。
   flushJournal();
   if (code !== 0) process.exit(code);

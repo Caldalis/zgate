@@ -12,7 +12,7 @@ import type { Context } from "../core/context.ts";
 import { defineRule } from "./index.ts";
 import type { Rule } from "./index.ts";
 import { baseName, hasSegment, normalize, redirectDestinations, underHome } from "./match.ts";
-import { commandLine } from "./cmdline.ts";
+import { commandLine, commandSegments } from "./cmdline.ts";
 
 /**
  * 「整个文件系统的根」的所有写法。
@@ -152,8 +152,9 @@ const credentialWrite = defineRule({
       action.verb === "write" || action.verb === "delete"
         ? action.targets.map((t) => t.raw)
         : [];
-    const cmd = commandLine(action);
-    if (cmd !== "") candidates.push(...redirectDestinations(cmd));
+    // 逐段扫:`bash -c 'echo k >> ~/.ssh/authorized_keys'` 的重定向在引号里,
+    // 对整条原文扫会被当成字符串跳过(D12.10)。
+    for (const seg of commandSegments(action)) candidates.push(...redirectDestinations(seg));
     for (const raw of candidates) {
       const p = raw.toLowerCase();
 

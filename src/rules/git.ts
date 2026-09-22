@@ -21,7 +21,7 @@ import type { Context } from "../core/context.ts";
 import { defineRule } from "./index.ts";
 import type { Rule } from "./index.ts";
 import { hasWord, normalize } from "./match.ts";
-import { commandLine } from "./cmdline.ts";
+import { commandLine, simpleCommands } from "./cmdline.ts";
 
 /**
  * 从命令行原文里判断 git 子命令。
@@ -85,7 +85,27 @@ function gitSubcommand(text: string): { sub: string; rest: string } | null {
 function cleanFlags(rest: string): string[] {
   return rest
     .split(/\s+/)
-    .filter((w) => w !== "" && !w.startsWith("-"));
+    // 重定向(`2>&1`、`>log`)不是位置参数 —— 否则 `git push --force 2>&1`
+    // 会被读成"推一个叫 2>&1 的分支",于是"推当前分支"的判据失效(D12.10)
+    .filter((w) => w !== "" && !w.startsWith("-") && !/[<>]/.test(w));
+}
+
+/**
+ * 原文里的**每一条** git 调用。
+ *
+ * 跨 `&&` / `;` / `|`,并且看穿 `bash -c '…'`(见 cmdline.ts 的 D12.10)。
+ * 第一版只对整条原文调一次 `gitSubcommand`,于是 `git status && git push
+ * --force` 看到的是 `status`,`bash -c 'git push --force'` 看到的是 `bash`
+ * —— 两种写法都静默放行。
+ */
+function gitInvocations(action: Action): { sub: string; rest: string; text: string }[] {
+  const out: { sub: string; rest: string; text: string }[] = [];
+  for (const seg of simpleCommands(action)) {
+    const text = normalize(seg);
+    const parsed = gitSubcommand(text);
+    if (parsed !== null) out.push({ ...parsed, text });
+  }
+  return out;
 }
 
 /**
@@ -145,26 +165,22 @@ const forcePushDefaultBranch = defineRule({
   verdict: "HARD_DENY",
   match(action: Action, ctx: Context | null): string | null {
     if (ctx === null || !ctx.repo.is_repo) return null;
-    const cmd = commandLine(action);
-    if (cmd === "") return null;
-
-    // 注意:这里**不**转小写。分支名和 `-D` 都是大小写敏感的,
-    // 而 `--force` / `-f` 在 isForcePush 里各自按需处理。
-    const parsed = gitSubcommand(normalize(cmd));
-    if (parsed === null || parsed.sub !== "push") return null;
-    if (!isForcePush(parsed.rest)) return null;
-
     const branch = ctx.repo.branch;
     const def = ctx.repo.default_branch;
     if (branch === null || def === null) return null;
     if (branch !== def) return null;
 
-    // 没写位置参数 ⇒ 推当前分支(= 默认分支)⇒ 判死。
-    // 写了就只在目的端确实是当前分支时判死。
-    const dests = pushDestinations(parsed.rest);
-    if (dests.length === 0) return `在默认分支 ${branch} 上强推`;
-    for (const d of dests) {
-      if (d === branch || d === "HEAD") return `在默认分支 ${branch} 上强推`;
+    // 注意:这里**不**转小写。分支名和 `-D` 都是大小写敏感的,
+    // 而 `--force` / `-f` 在 isForcePush 里各自按需处理。
+    for (const g of gitInvocations(action)) {
+      if (g.sub !== "push" || !isForcePush(g.rest)) continue;
+      // 没写位置参数 ⇒ 推当前分支(= 默认分支)⇒ 判死。
+      // 写了就只在目的端确实是当前分支时判死。
+      const dests = pushDestinations(g.rest);
+      if (dests.length === 0) return `在默认分支 ${branch} 上强推`;
+      for (const d of dests) {
+        if (d === branch || d === "HEAD") return `在默认分支 ${branch} 上强推`;
+      }
     }
     return null;
   },
@@ -193,14 +209,11 @@ const forcePushIntoDefault = defineRule({
     const def = ctx.repo.default_branch;
     if (def === null) return null; // 不知道默认分支叫什么,不猜(D7.7)
 
-    const cmd = commandLine(action);
-    if (cmd === "") return null;
-    const parsed = gitSubcommand(normalize(cmd));
-    if (parsed === null || parsed.sub !== "push") return null;
-    if (!isForcePush(parsed.rest)) return null;
-
-    for (const dst of pushDestinations(parsed.rest)) {
-      if (dst === def) return `强推覆盖远端默认分支 ${def}`;
+    for (const g of gitInvocations(action)) {
+      if (g.sub !== "push" || !isForcePush(g.rest)) continue;
+      for (const dst of pushDestinations(g.rest)) {
+        if (dst === def) return `强推覆盖远端默认分支 ${def}`;
+      }
     }
     return null;
   },
@@ -229,12 +242,11 @@ const forcePushUnknown = defineRule({
     const branchKnown = ctx !== null && ctx.repo.branch !== null;
     const defaultKnown = ctx !== null && ctx.repo.default_branch !== null;
     if (branchKnown && defaultKnown) return null; // 判据齐了,交给上面两条
-    const cmd = commandLine(action);
-    if (cmd === "") return null;
-    const parsed = gitSubcommand(normalize(cmd));
-    if (parsed === null || parsed.sub !== "push") return null;
-    if (!isForcePush(parsed.rest)) return null;
-    return branchKnown ? "强制推送,默认分支未知" : "强制推送,分支未知";
+    for (const g of gitInvocations(action)) {
+      if (g.sub !== "push" || !isForcePush(g.rest)) continue;
+      return branchKnown ? "强制推送,默认分支未知" : "强制推送,分支未知";
+    }
+    return null;
   },
 });
 
@@ -253,32 +265,28 @@ const destructiveGit = defineRule({
   stage: "pre",
   verdict: "SOFT",
   match(action: Action): string | null {
-    const cmd = commandLine(action);
-    if (cmd === "") return null;
-    const text = normalize(cmd);
-    const parsed = gitSubcommand(text);
-    if (parsed === null) return null;
-
-    if (parsed.sub === "reset" && /(^|\s)--hard(\s|$)/.test(parsed.rest)) {
-      return "丢弃工作区改动";
-    }
-    if (parsed.sub === "clean" && /(^|\s)-[a-z]*f/.test(parsed.rest)) {
-      return "删除未跟踪文件";
-    }
-    if (parsed.sub === "checkout" && /(^|\s)--(\s|$)/.test(text)) {
-      return "丢弃工作区改动";
-    }
-    if (parsed.sub === "restore" && /(^|\s)--(source|worktree|staged)(\s|$)/.test(parsed.rest)) {
-      return "丢弃工作区改动";
-    }
-    if (parsed.sub === "filter-branch" || parsed.sub === "filter-repo") {
-      return "重写仓库历史";
-    }
-    if (parsed.sub === "push" && /(^|\s)--(delete|mirror)(\s|$)/.test(parsed.rest)) {
-      return "删除远程分支或镜像推送";
-    }
-    if (parsed.sub === "branch" && /(^|\s)-D(\s|$)/.test(parsed.rest)) {
-      return "强制删除本地分支";
+    for (const g of gitInvocations(action)) {
+      if (g.sub === "reset" && /(^|\s)--hard(\s|$)/.test(g.rest)) {
+        return "丢弃工作区改动";
+      }
+      if (g.sub === "clean" && /(^|\s)-[a-z]*f/.test(g.rest)) {
+        return "删除未跟踪文件";
+      }
+      if (g.sub === "checkout" && /(^|\s)--(\s|$)/.test(g.text)) {
+        return "丢弃工作区改动";
+      }
+      if (g.sub === "restore" && /(^|\s)--(source|worktree|staged)(\s|$)/.test(g.rest)) {
+        return "丢弃工作区改动";
+      }
+      if (g.sub === "filter-branch" || g.sub === "filter-repo") {
+        return "重写仓库历史";
+      }
+      if (g.sub === "push" && /(^|\s)--(delete|mirror)(\s|$)/.test(g.rest)) {
+        return "删除远程分支或镜像推送";
+      }
+      if (g.sub === "branch" && /(^|\s)-D(\s|$)/.test(g.rest)) {
+        return "强制删除本地分支";
+      }
     }
     return null;
   },

@@ -6,12 +6,13 @@
 // 取最严取成了取最松)。
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { ActionSchema } from "../src/core/action.ts";
-import type { Action } from "../src/core/action.ts";
+import type { Action, Verb } from "../src/core/action.ts";
+import type { Decision } from "../src/core/decision.ts";
 import { clearCache, cacheSize, getCached, setCached } from "../src/core/cache.ts";
 import { merge, mergeAll, strictest } from "../src/core/merge.ts";
 import { DEFAULT_MODEL_TIMEOUT_MS, decideAction, decideActionAsync, decideAll, decideWithContext } from "../src/core/pipeline.ts";
@@ -685,4 +686,131 @@ describe("★ 审计修订的两条真实漏判,走适配器的生产路径", ()
     );
     expect(decideAll(acts, { noCache: true }).decision.verdict).not.toBe("deny");
   });
+});
+
+// ===========================================================================
+// §12 golden:tests/golden/cases.yaml
+//
+// 每条用例在自己的临时目录里跑,**走完整生产路径**:hook 输入 → 适配器
+// (toActions)→ 管线(decideAll)。不手写 Action —— 审计时两条漏判
+// (D12.2、D12.10)都藏在"手写 verb 绕过了解析层"的测试后面。
+//
+// rule_verdict 由 Decision 反推:M1 没有模型,§3.2 右列是一一映射
+// (deny ⇔ HARD_DENY、ask ⇔ SOFT、allow ⇔ PASS)。M2 接模型后这个映射不再
+// 成立,那时驱动要改成直接读规则段的结论。见 D13.2。
+
+interface GoldenGit {
+  readonly dir: string;
+  readonly branch: string;
+  readonly default_branch?: string;
+}
+interface GoldenSymlink {
+  readonly link: string;
+  readonly target: string;
+}
+interface GoldenCase {
+  readonly id: string;
+  readonly setup?: {
+    readonly mkdir?: readonly string[];
+    readonly write?: Readonly<Record<string, string>>;
+    readonly symlink?: GoldenSymlink | readonly GoldenSymlink[];
+    readonly git?: GoldenGit | readonly GoldenGit[];
+  };
+  readonly cwd?: string;
+  readonly tool: string;
+  readonly tool_input: Readonly<Record<string, unknown>>;
+  readonly expect: {
+    readonly actions?: number;
+    readonly verbs?: readonly Verb[];
+    readonly verb?: Verb;
+    readonly rule_verdict: "HARD_DENY" | "SOFT" | "PASS";
+    readonly verdict: "allow" | "ask" | "deny";
+    readonly rule_id?: string;
+    readonly resolved_contains?: string;
+  };
+}
+
+const GOLDEN: readonly GoldenCase[] = Bun.YAML.parse(
+  readFileSync(new URL("./golden/cases.yaml", import.meta.url), "utf8"),
+) as GoldenCase[];
+
+function ruleVerdictOf(d: Decision): "HARD_DENY" | "SOFT" | "PASS" {
+  if (d.verdict === "deny") return "HARD_DENY";
+  if (d.verdict === "ask") return "SOFT";
+  return "PASS";
+}
+
+function asList<T>(x: T | readonly T[] | undefined): readonly T[] {
+  if (x === undefined) return [];
+  return Array.isArray(x) ? (x as readonly T[]) : [x as T];
+}
+
+describe("§12 golden(tests/golden/cases.yaml)", () => {
+  test("用例文件:非空、id 唯一、每条覆盖 §12 要求的字段", () => {
+    expect(GOLDEN.length).toBeGreaterThanOrEqual(20);
+    const ids = GOLDEN.map((c) => c.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const c of GOLDEN) {
+      expect(["allow", "ask", "deny"], c.id).toContain(c.expect.verdict);
+      expect(["HARD_DENY", "SOFT", "PASS"], c.id).toContain(c.expect.rule_verdict);
+      expect(typeof c.tool, c.id).toBe("string");
+    }
+  });
+
+  test("★ 每个 verdict 都有正例:allow / ask / deny 至少各 5 条", () => {
+    const count = (v: string) => GOLDEN.filter((c) => c.expect.verdict === v).length;
+    expect(count("allow")).toBeGreaterThanOrEqual(5);
+    expect(count("ask")).toBeGreaterThanOrEqual(5);
+    expect(count("deny")).toBeGreaterThanOrEqual(5);
+  });
+
+  for (const c of GOLDEN) {
+    test(c.id, () => {
+      const base = realpathSync(mkdtempSync(join(root, "golden-")));
+      for (const d of c.setup?.mkdir ?? []) mkdirSync(join(base, d), { recursive: true });
+      for (const [p, content] of Object.entries(c.setup?.write ?? {})) {
+        mkdirSync(join(base, p, ".."), { recursive: true });
+        writeFileSync(join(base, p), content);
+      }
+      for (const g of asList(c.setup?.git)) {
+        mkdirSync(join(base, g.dir, ".git", "refs", "remotes", "origin"), { recursive: true });
+        writeFileSync(join(base, g.dir, ".git", "HEAD"), `ref: refs/heads/${g.branch}\n`);
+        if (g.default_branch !== undefined) {
+          writeFileSync(
+            join(base, g.dir, ".git", "refs", "remotes", "origin", "HEAD"),
+            `ref: refs/remotes/origin/${g.default_branch}\n`,
+          );
+        }
+      }
+      for (const s of asList(c.setup?.symlink)) symlinkSync(join(base, s.target), join(base, s.link));
+      clearGitCache();
+      clearCwdCache();
+
+      const cwd = join(base, c.cwd ?? ".");
+      const actions = toActions(
+        { hook_event_name: "PreToolUse", tool_name: c.tool, tool_input: { ...c.tool_input }, cwd },
+        `golden-${c.id}`,
+      );
+      const result = decideAll(actions, { noCache: true });
+      const e = c.expect;
+
+      if (e.actions !== undefined) expect(actions.length, "actions").toBe(e.actions);
+      if (e.verbs !== undefined) expect(actions.map((a) => a.verb), "verbs").toEqual([...e.verbs]);
+      if (e.verb !== undefined) {
+        expect(result.perAction[result.winningIndex]?.action.verb, "verb").toBe(e.verb);
+      }
+      expect(result.decision.verdict, "verdict").toBe(e.verdict);
+      expect(ruleVerdictOf(result.decision), "rule_verdict").toBe(e.rule_verdict);
+      if (e.rule_id !== undefined) expect(result.decision.rule_id, "rule_id").toBe(e.rule_id);
+      if (e.verdict !== "allow") expect(result.decision.reason, "reason").not.toBe("");
+      else expect(result.decision.reason, "allow 时 reason 为空").toBe("");
+      if (e.resolved_contains !== undefined) {
+        const needle = e.resolved_contains;
+        const resolved = result.perAction.flatMap(
+          (p) => p.context?.resources.map((r) => r.resolved ?? "") ?? [],
+        );
+        expect(resolved.some((r) => r.includes(needle)), `resolved_contains ${needle} in ${JSON.stringify(resolved)}`).toBe(true);
+      }
+    });
+  }
 });

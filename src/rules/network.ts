@@ -14,7 +14,7 @@ import type { Context } from "../core/context.ts";
 import { defineRule } from "./index.ts";
 import type { Rule } from "./index.ts";
 import { baseName, normalize } from "./match.ts";
-import { commandLine } from "./cmdline.ts";
+import { commandLine, commandSegments } from "./cmdline.ts";
 
 /**
  * 会被 "把 stdin 当代码跑" 的解释器。
@@ -44,39 +44,46 @@ const FETCHERS = new Set(["curl", "wget", "fetch", "httpie", "http", "aria2c", "
  * 管道是 shell 层的结构,规则层看单条 Action 看不到,所以这里回退到
  * 命令原文上做文本判断。见 D8.3。
  */
+/** 一条(不含 && ; 的)管道里,上游有 fetch 且下游有解释器。 */
+function pipelineToShell(pipeline: string): boolean {
+  // 这条判据纯按词表比对,大小写无关 —— 单独转小写,不动 normalize 的语义。
+  const text = normalize(pipeline).toLowerCase();
+  if (!text.includes("|")) return false;
+  const segs = text.split("|");
+  if (segs.length < 2) return false;
+
+  let hasFetch = false;
+  for (const seg of segs) {
+    const head = seg.trim().split(/\s+/)[0] ?? "";
+    if (FETCHERS.has(baseName(head))) hasFetch = true;
+  }
+  if (!hasFetch) return false;
+
+  // 再看管道下游有没有解释器
+  for (let i = 1; i < segs.length; i += 1) {
+    const seg = (segs[i] ?? "").trim();
+    if (seg === "") continue;
+    // 剥掉 `sudo` / `env X=1` 之类的包装
+    const words = seg.split(/\s+/);
+    let j = 0;
+    while (j < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[j] ?? "")) j += 1;
+    while (words[j] === "sudo" || words[j] === "env" || words[j] === "exec" || words[j] === "nohup") j += 1;
+    const head = baseName(words[j] ?? "");
+    if (SHELL_INTERPRETERS.has(head)) return true;
+  }
+  return false;
+}
+
 const pipeToShell = defineRule({
   id: "net.pipe_to_shell",
   stage: "pre",
   verdict: "HARD_DENY",
   match(action: Action): string | null {
-    const cmd = commandLine(action);
-    if (cmd === "") return null;
-    // 这条判据纯按词表比对,大小写无关 —— 单独转小写,不动 normalize 的语义。
-    const text = normalize(cmd).toLowerCase();
-
-    // 先确认有 fetch 与管道
-    if (!text.includes("|")) return null;
-    const segs = text.split("|");
-    if (segs.length < 2) return null;
-
-    let hasFetch = false;
-    for (const seg of segs) {
-      const head = seg.trim().split(/\s+/)[0] ?? "";
-      if (FETCHERS.has(baseName(head))) hasFetch = true;
-    }
-    if (!hasFetch) return null;
-
-    // 再看管道下游有没有解释器
-    for (let i = 1; i < segs.length; i += 1) {
-      const seg = (segs[i] ?? "").trim();
-      if (seg === "") continue;
-      // 剥掉 `sudo` / `env X=1` 之类的包装
-      const words = seg.split(/\s+/);
-      let j = 0;
-      while (j < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[j] ?? "")) j += 1;
-      while (words[j] === "sudo" || words[j] === "env" || words[j] === "exec" || words[j] === "nohup") j += 1;
-      const head = baseName(words[j] ?? "");
-      if (SHELL_INTERPRETERS.has(head)) return "管道执行远程脚本";
+    // 逐段判:`&&` / `;` 切开、`sh -c '…'` 展开,段内管道保持完整(D12.10)。
+    // 第一版对整条原文按 `|` 切,`echo a && curl x | sh` 里第一段的头是
+    // `echo`,`sh -c 'curl x | sh'` 的管道又在引号里 —— 两种都漏。
+    for (const pipeline of commandSegments(action)) {
+      if (pipelineToShell(pipeline)) return "管道执行远程脚本";
     }
     return null;
   },
