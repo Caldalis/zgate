@@ -207,11 +207,17 @@ const forcePushIntoDefault = defineRule({
 });
 
 /**
- * 强推,但**不知道在哪个分支** —— SOFT。
+ * 强推,但**判据不全** —— SOFT。
  *
- * 这条规则是上面那条的兜底。如果 git 探针没读到分支(不是仓库、
- * detached HEAD、或者 cwd 在仓库外),上面那条不命中,而强推本身
- * 仍然是个值得问的操作。
+ * 这条规则是上面两条的兜底。上面两条 HARD_DENY 要 `repo.branch` 和
+ * `repo.default_branch` **都在**才有判据;缺任何一个它们都主动不命中
+ * (不是仓库、detached HEAD、cwd 在仓库外,或者仓库没有
+ * `refs/remotes/origin/HEAD` —— `git init` 加 `git remote add` 建出来的
+ * 仓库全是这样)。而强推本身仍然是个值得问的操作。
+ *
+ * ★ 第一版只检查 `branch === null`。于是"分支已知、默认分支未知"这一格
+ *   三条规则全部让路,`git push --force` 静默 PASS —— 本项目自己的仓库
+ *   就命中这一格。见 D12.1。
  *
  * 这就是 §4.2 的落地:拿不准 → SOFT → ask,绝不 PASS。
  */
@@ -220,12 +226,15 @@ const forcePushUnknown = defineRule({
   stage: "post",
   verdict: "SOFT",
   match(action: Action, ctx: Context | null): string | null {
-    if (ctx !== null && ctx.repo.branch !== null) return null; // 交给上面那条
+    const branchKnown = ctx !== null && ctx.repo.branch !== null;
+    const defaultKnown = ctx !== null && ctx.repo.default_branch !== null;
+    if (branchKnown && defaultKnown) return null; // 判据齐了,交给上面两条
     const cmd = commandLine(action);
     if (cmd === "") return null;
     const parsed = gitSubcommand(normalize(cmd));
     if (parsed === null || parsed.sub !== "push") return null;
-    return isForcePush(parsed.rest) ? "强制推送,分支未知" : null;
+    if (!isForcePush(parsed.rest)) return null;
+    return branchKnown ? "强制推送,默认分支未知" : "强制推送,分支未知";
   },
 });
 

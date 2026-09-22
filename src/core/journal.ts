@@ -53,6 +53,10 @@ export const JournalLineSchema = z.object({
   }),
   turn_id: z.string(),
   action: ActionSchema,
+  // §9 的示例把 context 写成完整序列化;这里允许 null,但**只**在 pre 轮
+  // HARD_DENY 时出现 —— §4.3 说那条路不做环境探测,没有 Context 可记,
+  // 写一个空壳是造假数据。SOFT / PASS / 缓存命中一律是完整 Context,
+  // 由 server.ts 负责传进来。这是对 §9 文本唯一的偏离,见 D11.1。
   context: ContextSchema.nullable(),
   decision: DecisionSchema,
   outcome: OutcomeSchema.nullable(),

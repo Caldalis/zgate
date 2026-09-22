@@ -15,6 +15,7 @@ import { ContextSchema } from "../src/core/context.ts";
 import type { Context } from "../src/core/context.ts";
 import type { ResourceFacts, RepoFacts } from "../src/core/context.ts";
 import { evaluate, RULES } from "../src/rules/index.ts";
+import { redirectDestinations } from "../src/rules/match.ts";
 
 const TURN = "t-rules";
 const CWD = "/repo";
@@ -699,5 +700,101 @@ describe("HARD_DENY 不可推翻(§3.2)", () => {
       const hit = decide(a, c);
       expect(hit.reason.length, `${a.tool_name} ${String(a.command)}`).toBeLessThanOrEqual(40);
     }
+  });
+});
+
+// ===========================================================================
+describe("★ D12.1 强推且默认分支未知 → SOFT,绝不 PASS", () => {
+  // 没有 refs/remotes/origin/HEAD 的仓库(git init + git remote add 建出来的
+  // 全是这样)default_branch 为 null。两条 HARD_DENY 规则主动不命中,
+  // 兜底规则必须接住 —— 第一版只看 branch,这一格三条规则全部让路。
+  const FORCE = [
+    "git push --force",
+    "git push -f origin main",
+    "git push origin +main",
+    "git push --force origin feature/x",
+  ];
+  for (const cmd of FORCE) {
+    test(`${JSON.stringify(cmd)} @ main,default_branch 未知 → SOFT`, () => {
+      const a = act("network", { command: cmd });
+      const hit = decide(a, ctx({ repo: { branch: "main", default_branch: null } }));
+      expect(hit.verdict, cmd).toBe("SOFT");
+      expect(hit.rule_id).toBe("git.force_push_unknown");
+      expect(hit.reason).toContain("默认分支未知");
+    });
+    test(`${JSON.stringify(cmd)} @ feature,default_branch 未知 → SOFT`, () => {
+      const a = act("network", { command: cmd });
+      const hit = decide(a, ctx({ repo: { branch: "feature/x", default_branch: null } }));
+      expect(hit.verdict, cmd).toBe("SOFT");
+    });
+  }
+
+  test("判据齐全时兜底规则让路:feature 推 feature 仍然 PASS", () => {
+    const a = act("network", { command: "git push --force origin feature/x" });
+    expect(decide(a, ctx({ repo: { branch: "feature/x", default_branch: "main" } })).verdict).toBe("PASS");
+  });
+
+  test("反向:普通 push 在默认分支未知时不问", () => {
+    const a = act("network", { command: "git push origin main" });
+    expect(decide(a, ctx({ repo: { branch: "main", default_branch: null } })).verdict).toBe("PASS");
+  });
+});
+
+// ===========================================================================
+describe("★ D12.2 凭据目录写入要认重定向(verb 不是 write 也一样)", () => {
+  // 解析层按 D2.5 让 verb 跟左边的命令走:`echo k >> ~/.ssh/authorized_keys`
+  // 是 exec + 一个 redirect 目标。`from: "redirect"` 过了适配器就没了(D8.1),
+  // 规则层只能从命令原文重新认。第一版按 verb 一刀切,这条命令静默 ALLOW。
+  const REDIRECT_WRITES: { cmd: string; verb: Action["verb"] }[] = [
+    { cmd: "echo k >> ~/.ssh/authorized_keys", verb: "exec" },
+    { cmd: 'echo k > "$HOME/.ssh/authorized_keys"', verb: "exec" },
+    { cmd: "cat pub.key >> ~/.ssh/authorized_keys", verb: "read" },
+    { cmd: "curl https://x/y > ~/.aws/credentials", verb: "network" },
+    { cmd: "echo x 2>&1 >~/.ssh/config", verb: "exec" },
+  ];
+  for (const { cmd, verb } of REDIRECT_WRITES) {
+    test(`${JSON.stringify(cmd)} → HARD_DENY`, () => {
+      // 解析层给出的形态:targets 里有重定向文件,但 verb 不是 write
+      const target = redirectDestinations(cmd)[0] ?? "";
+      const a = act(verb, { command: cmd, targets: [{ kind: "file", raw: target }] });
+      const hit = decide(a, ctx());
+      expect(hit.verdict, cmd).toBe("HARD_DENY");
+      expect(hit.rule_id).toBe("fs.credential_write");
+    });
+  }
+
+  test("★ 反向:读凭据、输出到别处 → 不判死(读是 post 轮的 SOFT)", () => {
+    const a = act("read", {
+      command: "cat ~/.ssh/id_rsa > /tmp/x",
+      targets: [{ kind: "file", raw: "~/.ssh/id_rsa" }, { kind: "file", raw: "/tmp/x" }],
+    });
+    expect(decide(a, ctx()).verdict).not.toBe("HARD_DENY");
+  });
+
+  test("★ 反向:引号里的 > 不是重定向", () => {
+    const a = act("exec", { command: 'echo "a > ~/.ssh/authorized_keys"' });
+    expect(decide(a, ctx()).verdict).not.toBe("HARD_DENY");
+  });
+
+  test("★ 反向:fd 复制与 /dev/null 不是凭据写入", () => {
+    const a = act("exec", {
+      command: "npm test 2>&1 >/dev/null",
+      targets: [{ kind: "file", raw: "/dev/null" }],
+    });
+    expect(decide(a, ctx()).verdict).not.toBe("HARD_DENY");
+  });
+
+  test("redirectDestinations:各种写法", () => {
+    expect(redirectDestinations("echo k >> ~/.ssh/authorized_keys")).toEqual(["~/.ssh/authorized_keys"]);
+    expect(redirectDestinations("cat a > b 2>&1")).toEqual(["b"]);
+    expect(redirectDestinations("x 2>err.log 1>&2")).toEqual(["err.log"]);
+    expect(redirectDestinations("echo \"a > b\" > 'c d.txt'")).toEqual(["c d.txt"]);
+    expect(redirectDestinations("echo x &> all.log")).toEqual(["all.log"]);
+    expect(redirectDestinations("echo x >| f")).toEqual(["f"]);
+    expect(redirectDestinations("a>b")).toEqual(["b"]);
+    expect(redirectDestinations("diff <(a) >(b)")).toEqual([]);
+    expect(redirectDestinations("cat <<EOF > out\nhi\nEOF")).toEqual(["out"]);
+    expect(redirectDestinations("cat < in")).toEqual([]);
+    expect(redirectDestinations("echo hi")).toEqual([]);
   });
 });

@@ -90,3 +90,67 @@ export function underHome(path: string): string | null {
 export function segmentsOf(path: string): string[] {
   return path.split("/").filter((s) => s !== "" && s !== ".");
 }
+
+/**
+ * 从命令原文里提取**输出重定向的目的地**(`> f`、`>> f`、`>f`、`2> f`、
+ * `&> f`、`>| f`)。fd 复制(`2>&1`、`>&2`)不是文件,跳过(与 D2.6 一致);
+ * 输入重定向与 heredoc 不是写,跳过;引号里的 `>` 不是算子。
+ *
+ * 为什么规则层要自己扫一遍:解析层给重定向目标打了 `from: "redirect"`
+ * (D8.1),但那是 shell 层的中间态,适配器按 §2.1 只保留 kind/raw ——
+ * 到规则层时已经分不清一个目标是命令参数还是 `>` 后面的文件。而这两者
+ * 的严重程度完全不同:`cat ~/.ssh/id_rsa` 是读,`echo k >> ~/.ssh/authorized_keys`
+ * 是往授权公钥里写。D2.5 让 verb 跟左边的命令走,所以后者的 verb 是 exec,
+ * 按 verb 一刀切的规则会放过它 —— 这个漏判真的出现过(D12.2)。
+ *
+ * 引号只剥一层,变量不展开(D2.4):`"$HOME/.ssh/x"` 原样返回 `$HOME/.ssh/x`,
+ * 由 `underHome` 认字面的 `$HOME`。`tee` 不在这里处理 —— 解析层把它归为
+ * write 并给出目标,走 verb 那条路。
+ */
+export function redirectDestinations(text: string): string[] {
+  const out: string[] = [];
+  const n = text.length;
+  let i = 0;
+  let quote: "'" | '"' | null = null;
+
+  const isBreak = (ch: string): boolean => /[\s;|&<>()]/.test(ch);
+
+  while (i < n) {
+    const c = text[i] ?? "";
+    if (quote !== null) {
+      if (c === "\\" && quote === '"') { i += 2; continue; }
+      if (c === quote) quote = null;
+      i += 1;
+      continue;
+    }
+    if (c === "'" || c === '"') { quote = c; i += 1; continue; }
+    if (c === "\\") { i += 2; continue; }
+    if (c !== ">") { i += 1; continue; }
+
+    // 算子:> / >> / >| ;前面可能紧贴 fd 数字或 &,那些字符已经被跳过了
+    let j = i + 1;
+    if (text[j] === ">") j += 1;
+    if (text[j] === "|") j += 1;
+    while (j < n && /\s/.test(text[j] ?? "")) j += 1;
+    if (text[j] === "&") { i = j + 1; continue; } // fd 复制:2>&1 / >&2 / >&-
+
+    // 读一个词,引号内原样收下
+    let word = "";
+    while (j < n) {
+      const d = text[j] ?? "";
+      if (d === "'" || d === '"') {
+        const close = text.indexOf(d, j + 1);
+        if (close === -1) { word += text.slice(j + 1); j = n; break; }
+        word += text.slice(j + 1, close);
+        j = close + 1;
+        continue;
+      }
+      if (isBreak(d)) break;
+      word += d;
+      j += 1;
+    }
+    if (word !== "") out.push(word);
+    i = Math.max(j, i + 1);
+  }
+  return out;
+}

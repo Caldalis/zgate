@@ -110,7 +110,9 @@ async function handleDecide(req: Request, opts: PipelineOptions): Promise<Respon
 
   const action = parsed.data as Action;
   const result = decideAll([action], opts);
-  record(action, null, result.decision);
+  // 记整体决策(它的 decision_id 就是回给调用方的那个,/outcome 靠它对上),
+  // Context 取自这唯一一条 Action 的判定。
+  record(action, result.perAction[0]?.context ?? null, result.decision);
   return json(result.decision);
 }
 
@@ -154,14 +156,15 @@ async function handleHook(req: Request, opts: PipelineOptions): Promise<Response
 
   try {
     const result = decideAll(actions, opts);
-    // §9:每条 Action 各记一行,整体结论也记一行。
+    // §9:每条 Action 各记一行,带上判它时看到的 Context。
     //
-    // 为什么每条都记而不是只记整体:训练数据要的是"这条命令该判什么",
-    // 而复合语句里的每一条都是独立样本(`cd a && rm -rf b` 里 `cd a`
-    // 的判例和 `rm -rf b` 的判例都有价值)。整体结论单独记一行是因为
-    // 用户实际看到的是它 —— override 标注会挂在它身上。
-    for (const { action, decision } of result.perAction) {
-      record(action, null, decision);
+    // 为什么按条记而不是记整体:训练数据要的是"这条命令在这个环境下该判
+    // 什么",复合语句里的每一条都是独立样本(`mkdir a && rm -rf b` 里两条
+    // 各有各的判例)。整体结论**不单独记一行**:它没有自己的 Action,而
+    // Claude Code 的 hook 响应也带不回 decision_id,记了也对不上 /outcome。
+    // 单条 Action 时(绝大多数情况)整体结论与那一行只差一个 id。见 D11.2。
+    for (const { action, context, decision } of result.perAction) {
+      record(action, context, decision);
     }
     return json(toHookResponse(result.decision));
   } catch {
@@ -215,6 +218,10 @@ export function createServer(config: ServerConfig = defaultConfig()) {
   const opts: PipelineOptions = {
     backend: config.backend,
     modelTimeoutMs: config.modelTimeoutMs,
+    // §6 的 env_hints 从这里进。传引用不传快照:白名单外的变量在探针里
+    // 就被过滤掉了,进日志的只有那四项。第一版漏了这一行,daemon 里
+    // env_hints 永远是三个 "false"(D12.3)。
+    env: process.env,
   };
 
   const server = Bun.serve({

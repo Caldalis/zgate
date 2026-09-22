@@ -11,7 +11,7 @@ import type { Action } from "../core/action.ts";
 import type { Context } from "../core/context.ts";
 import { defineRule } from "./index.ts";
 import type { Rule } from "./index.ts";
-import { baseName, hasSegment, normalize, underHome } from "./match.ts";
+import { baseName, hasSegment, normalize, redirectDestinations, underHome } from "./match.ts";
 import { commandLine } from "./cmdline.ts";
 
 /**
@@ -143,9 +143,19 @@ const credentialWrite = defineRule({
   stage: "pre",
   verdict: "HARD_DENY",
   match(action: Action): string | null {
-    if (action.verb !== "write" && action.verb !== "delete") return null;
-    for (const t of action.targets) {
-      const p = t.raw.toLowerCase();
+    // verb 为 write/delete 时 targets 就是写的对象。其余 verb(exec / read /
+    // network)的 targets 里参数与重定向目标混在一起,而 `from: "redirect"`
+    // 过了适配器就没了(§2.1 只留 kind/raw),所以从命令原文重新提取重定向
+    // 目的地。不这样做,`echo k >> ~/.ssh/authorized_keys` 的 verb 是 exec
+    // (D2.5),这条规则整个让路 —— 这个漏判真的出现过,见 D12.2。
+    const candidates: string[] =
+      action.verb === "write" || action.verb === "delete"
+        ? action.targets.map((t) => t.raw)
+        : [];
+    const cmd = commandLine(action);
+    if (cmd !== "") candidates.push(...redirectDestinations(cmd));
+    for (const raw of candidates) {
+      const p = raw.toLowerCase();
 
       const homeRel = underHome(p);
       if (homeRel !== null) {

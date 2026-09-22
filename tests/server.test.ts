@@ -426,3 +426,66 @@ describe("§13 冷启动", () => {
     expect(dt).toBeLessThan(500);
   });
 });
+
+// ===========================================================================
+describe("★ D12.3 日志里带 Context 与 env_hints(§9 / §6)", () => {
+  function lastLine(): Record<string, any> {
+    const lines = readFileSync(journalFileFor(new Date()), "utf8").split("\n").filter((l) => l !== "");
+    return JSON.parse(lines[lines.length - 1]!) as Record<string, any>;
+  }
+
+  test("★ PASS 的决策落盘时 context 非空:目标事实、分支、env_hints 都在", async () => {
+    const prevTerm = process.env["TERM_PROGRAM"];
+    const prevCi = process.env["CI"];
+    process.env["TERM_PROGRAM"] = "zgate-e2e";
+    process.env["CI"] = "1";
+    try {
+      await post("/hook/claude-code", hookBody("Bash", { command: "rm -rf ./build" }));
+    } finally {
+      if (prevTerm === undefined) delete process.env["TERM_PROGRAM"]; else process.env["TERM_PROGRAM"] = prevTerm;
+      if (prevCi === undefined) delete process.env["CI"]; else process.env["CI"] = prevCi;
+    }
+    flushJournal();
+    const rec = lastLine();
+    expect(rec["action"]["verb"]).toBe("delete");
+    expect(rec["decision"]["verdict"]).toBe("allow");
+    const ctx = rec["context"];
+    expect(ctx).not.toBeNull();
+    expect(ctx["resources"][0]["raw"]).toBe("./build");
+    expect(ctx["resources"][0]["is_dir"]).toBe(true);
+    expect(ctx["resources"][0]["inside_cwd"]).toBe(true);
+    expect(ctx["repo"]["branch"]).toBe("main");
+    expect(ctx["env_hints"]["TERM_PROGRAM"]).toBe("zgate-e2e");
+    expect(ctx["env_hints"]["CI"]).toBe("true");
+    // §6:白名单之外的一律不进日志
+    expect(Object.keys(ctx["env_hints"]).sort()).toEqual(["CI", "GIT_DIR", "TERM_PROGRAM", "VIRTUAL_ENV"]);
+  });
+
+  test("pre 轮判死的决策 context 为 null(§4.3 不探测,D11.1)", async () => {
+    await post("/hook/claude-code", hookBody("Bash", { command: "rm -rf /" }));
+    flushJournal();
+    const rec = lastLine();
+    expect(rec["decision"]["rule_id"]).toBe("fs.rm_root");
+    expect(rec["context"]).toBeNull();
+  });
+
+  test("/decide 记的是回给调用方的那个 decision_id,且带 Context", async () => {
+    const action = ActionSchema.parse({
+      verb: "delete",
+      targets: [{ kind: "file", raw: "./build" }],
+      command: null,
+      tool_name: "Bash",
+      tool_input: { command: "rm -rf ./build" },
+      agent: { name: "claude-code", version: null, session_id: null },
+      cwd: repo,
+      turn_id: "t-decide-ctx",
+    });
+    const res = await post("/decide", { action });
+    const decision = (await res.json()) as Decision;
+    flushJournal();
+    const rec = lastLine();
+    expect(rec["decision_id"]).toBe(decision.decision_id);
+    expect(rec["context"]).not.toBeNull();
+    expect(rec["context"]["resources"][0]["raw"]).toBe("./build");
+  });
+});

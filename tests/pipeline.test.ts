@@ -14,7 +14,8 @@ import { ActionSchema } from "../src/core/action.ts";
 import type { Action } from "../src/core/action.ts";
 import { clearCache, cacheSize, getCached, setCached } from "../src/core/cache.ts";
 import { merge, mergeAll, strictest } from "../src/core/merge.ts";
-import { DEFAULT_MODEL_TIMEOUT_MS, decideAction, decideActionAsync, decideAll } from "../src/core/pipeline.ts";
+import { DEFAULT_MODEL_TIMEOUT_MS, decideAction, decideActionAsync, decideAll, decideWithContext } from "../src/core/pipeline.ts";
+import { toActions } from "../src/adapters/claude-code.ts";
 import { BACKENDS } from "../src/backends/index.ts";
 import { clearGitCache, clearCwdCache } from "../src/enrichers/index.ts";
 import type { ModelBackend, ModelVerdict } from "../src/backends/index.ts";
@@ -588,5 +589,100 @@ describe("Decision 的形状(§2.3)", () => {
     const d = decideAction(action("exec", { command: "echo hi" }));
     expect(Number.isFinite(d.latency_ms)).toBe(true);
     expect(d.latency_ms).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ===========================================================================
+describe("D12.3 Context 随决策带出(§9 的日志要记它)", () => {
+  test("★ PASS 的决策带完整 Context;pre 轮判死时为 null", () => {
+    const repo = join(root, "ctx-case");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    mkdirSync(join(repo, "build"), { recursive: true });
+    writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+
+    const pass = decideWithContext(
+      action("delete", { command: "rm -rf ./build", targets: [{ kind: "file", raw: "./build" }], cwd: repo }),
+      { noCache: true, env: { CI: "1", TERM_PROGRAM: "zgate-test" } },
+    );
+    expect(pass.decision.verdict).toBe("allow");
+    expect(pass.context).not.toBeNull();
+    expect(pass.context?.resources[0]?.raw).toBe("./build");
+    expect(pass.context?.resources[0]?.is_dir).toBe(true);
+    expect(pass.context?.repo.branch).toBe("main");
+    expect(pass.context?.env_hints["CI"]).toBe("true");
+    expect(pass.context?.env_hints["TERM_PROGRAM"]).toBe("zgate-test");
+
+    const deny = decideWithContext(
+      action("delete", { command: "rm -rf /", targets: [{ kind: "file", raw: "/" }], cwd: repo }),
+      { noCache: true },
+    );
+    expect(deny.decision.verdict).toBe("deny");
+    // §4.3:pre 轮判死不探测,没有 Context 可记 —— 这是 D11.1 允许 null 的唯一场合
+    expect(deny.context).toBeNull();
+  });
+
+  test("★ 缓存命中时带回当初产出裁决的那份 Context,不是 null", () => {
+    const repo = join(root, "ctx-cache-case");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    mkdirSync(join(repo, "d"), { recursive: true });
+    writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+    const mk = () =>
+      action("delete", { command: "rm -rf ./d", targets: [{ kind: "file", raw: "./d" }], cwd: repo });
+    const first = decideWithContext(mk());
+    const second = decideWithContext(mk());
+    expect(first.decision.source).not.toBe("cache");
+    expect(second.decision.source).toBe("cache");
+    expect(second.context).not.toBeNull();
+    expect(second.context).toEqual(first.context);
+  });
+
+  test("decideAll 的 perAction 每条都带 Context", () => {
+    const r = decideAll(
+      [action("exec", { command: "echo a" }), action("exec", { command: "echo b" })],
+      { noCache: true },
+    );
+    expect(r.perAction.length).toBe(2);
+    for (const p of r.perAction) expect(p.context).not.toBeNull();
+  });
+
+  test("decideAction 与 decideWithContext 结论一致", () => {
+    const a = action("exec", { command: "bun test" });
+    const d1 = decideAction(a, { noCache: true });
+    const d2 = decideWithContext(a, { noCache: true }).decision;
+    expect([d2.verdict, d2.source, d2.rule_id]).toEqual([d1.verdict, d1.source, d1.rule_id]);
+  });
+});
+
+// ===========================================================================
+describe("★ 审计修订的两条真实漏判,走适配器的生产路径", () => {
+  test("D12.1 没有 origin/HEAD 的仓库里强推 → ask,不是 allow", () => {
+    const repo = join(root, "no-origin-head");
+    mkdirSync(join(repo, ".git", "refs", "heads"), { recursive: true });
+    writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+    for (const cmd of ["git push --force", "git push -f origin main", "git push origin +main"]) {
+      const acts = toActions({ tool_name: "Bash", tool_input: { command: cmd }, cwd: repo }, "t");
+      const d = decideAll(acts, { noCache: true }).decision;
+      expect(d.verdict, cmd).toBe("ask");
+      expect(d.rule_id, cmd).toBe("git.force_push_unknown");
+    }
+  });
+
+  test("D12.2 echo k >> ~/.ssh/authorized_keys 经解析层是 exec,仍然 deny", () => {
+    const acts = toActions(
+      { tool_name: "Bash", tool_input: { command: "echo k >> ~/.ssh/authorized_keys" }, cwd: root },
+      "t",
+    );
+    expect(acts[0]?.verb).toBe("exec"); // D2.5:verb 跟左边的命令走
+    const d = decideAll(acts, { noCache: true }).decision;
+    expect(d.verdict).toBe("deny");
+    expect(d.rule_id).toBe("fs.credential_write");
+  });
+
+  test("反向:echo k >> ./notes.txt 不 deny", () => {
+    const acts = toActions(
+      { tool_name: "Bash", tool_input: { command: "echo k >> ./notes.txt" }, cwd: root },
+      "t",
+    );
+    expect(decideAll(acts, { noCache: true }).decision.verdict).not.toBe("deny");
   });
 });
