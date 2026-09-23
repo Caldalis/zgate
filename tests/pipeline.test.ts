@@ -814,3 +814,59 @@ describe("§12 golden(tests/golden/cases.yaml)", () => {
     });
   }
 });
+
+// ===========================================================================
+describe("★ D12.11 越界写不存在的目标(真实 fs,走适配器)", () => {
+  function mkRepo(name: string): { repo: string; outside: string } {
+    const repo = join(root, name);
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(repo, "key"), "k");
+    const outside = realpathSync(mkdtempSync(join(root, `${name}-out-`)));
+    return { repo, outside };
+  }
+  function bash(command: string, cwd: string): Decision {
+    return decideAll(toActions({ tool_name: "Bash", tool_input: { command }, cwd }, "t"), { noCache: true }).decision;
+  }
+  function tool(name: string, input: Record<string, unknown>, cwd: string): Decision {
+    return decideAll(toActions({ tool_name: name, tool_input: input, cwd }, "t"), { noCache: true }).decision;
+  }
+
+  test("cp 写一个不存在的外部目标 → ask", () => {
+    const { repo, outside } = mkRepo("d1211-cp");
+    const d = bash(`cp key ${join(outside, "new")}`, repo);
+    expect(d.verdict).toBe("ask");
+    expect(d.rule_id).toBe("fs.outside_cwd");
+  });
+
+  test("★ 重定向写外部(verb 是 exec)→ ask", () => {
+    const { repo, outside } = mkRepo("d1211-redir");
+    const d = bash(`echo x > ${join(outside, "evil")}`, repo);
+    expect(d.verdict).toBe("ask");
+    expect(d.rule_id).toBe("fs.outside_cwd");
+  });
+
+  test("Write 工具写 cwd 外的新文件 → ask", () => {
+    const { repo } = mkRepo("d1211-write");
+    const d = tool("Write", { file_path: "../sibling-new", content: "x" }, repo);
+    expect(d.verdict).toBe("ask");
+  });
+
+  test("★ 反向:Write 工具在 cwd 内新建文件 → allow(不误拦)", () => {
+    const { repo } = mkRepo("d1211-write-in");
+    expect(tool("Write", { file_path: "./src/new.ts", content: "x" }, repo).verdict).toBe("allow");
+    expect(bash("echo x > ./src/new2.ts", repo).verdict).toBe("allow");
+  });
+
+  test("★ 反向:删一个不存在的东西(内外都)→ allow(空操作无害)", () => {
+    const { repo, outside } = mkRepo("d1211-del");
+    expect(bash("rm -rf ./nope", repo).verdict).toBe("allow");
+    expect(bash(`rm -rf ${join(outside, "nope")}`, repo).verdict).toBe("allow");
+  });
+
+  test("★ 反向:读一个不存在的外部文件 → allow", () => {
+    const { repo, outside } = mkRepo("d1211-read");
+    expect(tool("Read", { file_path: join(outside, "nope") }, repo).verdict).toBe("allow");
+  });
+});

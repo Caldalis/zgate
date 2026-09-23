@@ -605,3 +605,60 @@
     verb: read
     rule_verdict: PASS
     verdict: allow
+
+# ── D12.11:越界写不存在的目标 ──────────────────────────────────────────
+# 写一个 cwd 外、还不存在的目标应该问一声(装 cron、拷密钥出去都是这个形态)。
+# 判据靠不存在路径的预期落点(fs.ts 的 projectPath),见 DECISIONS D12.11。
+
+- id: write-nonexistent-outside-cwd-via-tool
+  setup:
+    git: { dir: "repo", branch: "main" }
+    mkdir: ["elsewhere"]
+  cwd: "repo"
+  tool: Write
+  tool_input: { file_path: "../elsewhere/newfile", content: "x" }
+  expect:
+    verb: write
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: fs.outside_cwd
+
+- id: write-nonexistent-outside-cwd-via-redirect
+  # verb 是 exec(重定向的 verb 跟左边命令走),规则从原文认重定向目的地
+  setup:
+    git: { dir: "repo", branch: "main" }
+    mkdir: ["elsewhere"]
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "echo x > ../elsewhere/evil" }
+  expect:
+    verb: exec
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: fs.outside_cwd
+
+- id: write-new-file-inside-cwd
+  # 反例:cwd 内新建文件极常见,绝不能因为"还不存在"就误拦
+  setup:
+    git: { dir: "repo", branch: "main" }
+    mkdir: ["repo/src"]
+  cwd: "repo"
+  tool: Write
+  tool_input: { file_path: "./src/brandnew.ts", content: "export {}\n" }
+  expect:
+    verb: write
+    rule_verdict: PASS
+    verdict: allow
+
+- id: delete-nonexistent-outside-is-harmless
+  # 反例:删一个不存在的东西是空操作,不问
+  setup:
+    git: { dir: "repo", branch: "main" }
+    mkdir: ["elsewhere"]
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "rm -rf ../elsewhere/nope" }
+  expect:
+    verb: delete
+    rule_verdict: PASS
+    verdict: allow

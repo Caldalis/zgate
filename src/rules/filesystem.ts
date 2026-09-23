@@ -253,13 +253,35 @@ const escapesCwd = defineRule({
   stage: "post",
   verdict: "SOFT",
   match(action: Action, ctx: Context | null): string | null {
-    if (action.verb !== "delete" && action.verb !== "write") return null;
     if (ctx === null) return null;
+
+    // 哪些 resource 是这次"写 / 删"的对象?
+    //   verb 是 write/delete  →  全部 targets 都是
+    //   其它 verb(exec/read)  →  只有**重定向目的地**是写(`echo x > out`),
+    //     命令参数不是(`cat a > b` 里 a 是读)。重定向的 from 标记过了适配器
+    //     就没了(§2.1 / D8.1),所以从命令原文重新提取,按 raw 和已探测的
+    //     resource 对号 —— 不然 `echo x > /外部` 的 verb 是 exec,整条规则让路,
+    //     和 D12.2 是同一类漏判。
+    const writeAll = action.verb === "write" || action.verb === "delete";
+    let redirects: Set<string> | null = null;
+    if (!writeAll) {
+      redirects = new Set<string>();
+      for (const seg of commandSegments(action)) {
+        for (const d of redirectDestinations(seg)) redirects.add(d);
+      }
+      if (redirects.size === 0) return null; // 没有写目标 —— 交给别的规则
+    }
+
     for (const f of ctx.resources) {
-      if (!f.exists) continue; // 不存在的东西删不掉也写不进去(会被创建)
+      if (redirects !== null && !redirects.has(f.raw)) continue; // 是参数,不是写目标
+      // 删一个不存在的东西是空操作,无害 —— 跳过。写会**创建**它,不能跳:
+      // 往 cwd 外写新文件正是该问的(D12.11)。
+      if (action.verb === "delete" && !f.exists) continue;
       if (f.inside_cwd) continue;
+      // resolved 为 null = 连预期落点都算不出(悬空软链接),确实不知道在哪,跳过。
+      // 不存在的普通路径现在带预期落点(fs.ts 的 projectPath),resolved 非 null。
       if (f.resolved === null) continue;
-      // inside_cwd 为 false 且 resolved 存在 —— 已经在 cwd 之外了
+      // inside_cwd 为 false 且 resolved 存在 —— 真实或预期落点已经在 cwd 之外了
       return f.is_symlink ? "目标软链接指向 cwd 之外" : "目标在 cwd 之外";
     }
     return null;
@@ -364,11 +386,15 @@ const productionWord = defineRule({
 });
 
 /**
- * 越界写入但目标**不存在**的情况。
+ * 越界写入但目标**不存在**的情况(冗余兜底)。
  *
- * `echo x > /etc/cron.d/evil` 里目标不存在,上面几条都跳过(`!f.exists`
- * 就 continue 了)。但写一个仓库外的绝对路径,恰恰是最该问的一种。
- * 所以单列一条:目标不存在 + 是绝对路径 + 在 cwd 之外 ⇒ SOFT。
+ * D12.11 之前,`fs.outside_cwd` 对不存在的目标一律 `!f.exists` 就 continue,
+ * 于是 `echo x > /etc/cron.d/evil` 这种"写仓库外的新文件"漏判。这条规则当时
+ * 是唯一的补丁,但只在 cwd **不是**仓库时生效,仓库内仍漏。
+ *
+ * D12.11 修好之后,不存在的目标带上了预期落点,`fs.outside_cwd` 已经覆盖
+ * 主路径(含仓库内)。这条留作非仓库场景的冗余:目标不存在 + 绝对路径 +
+ * cwd 之外 ⇒ SOFT。两条都命中时同为 SOFT,取最严不受影响。
  */
 const absoluteWriteOutside = defineRule({
   id: "fs.absolute_outside",

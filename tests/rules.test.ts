@@ -913,3 +913,59 @@ describe("cmdline:切段与 sh -c 展开", () => {
     expect(simpleCommands(act("read", { command: null }))).toEqual([]);
   });
 });
+
+// ===========================================================================
+describe("★ D12.11 写/删不存在且在 cwd 外的目标 → SOFT", () => {
+  // 不存在的目标现在带预期落点(fs.ts 的 projectPath):exists false 但 resolved
+  // 非 null、inside_cwd 反映预期落点。这里用合成 facts 直接喂规则,验证判据。
+  const outsideNew = () => facts("out/new", { exists: false, inside_cwd: false, inside_repo: false, resolved: "/elsewhere/new" });
+  const insideNew = () => facts("src/new.ts", { exists: false, inside_cwd: true, inside_repo: true, resolved: `${CWD}/src/new.ts` });
+
+  test("write 到不存在的外部目标 → SOFT(fs.outside_cwd)", () => {
+    const a = act("write", { targets: [{ kind: "file", raw: "out/new" }], command: "cp key /elsewhere/new" });
+    const hit = decide(a, ctx({ resources: [outsideNew()] }));
+    expect(hit.verdict).toBe("SOFT");
+    expect(hit.rule_id).toBe("fs.outside_cwd");
+  });
+
+  test("★ delete 不存在的外部目标 → 不 fire(删空操作无害)", () => {
+    const a = act("delete", { targets: [{ kind: "file", raw: "out/new" }], command: "rm -rf /elsewhere/new" });
+    const hit = decide(a, ctx({ resources: [outsideNew()] }));
+    expect(hit.verdict).toBe("PASS");
+  });
+
+  test("★ write 到不存在但在 cwd 内的目标 → 不 fire(新建文件极常见)", () => {
+    const a = act("write", { targets: [{ kind: "file", raw: "src/new.ts" }], command: "> ./src/new.ts" });
+    expect(decide(a, ctx({ resources: [insideNew()] })).verdict).toBe("PASS");
+  });
+
+  test("★ 重定向写外部:verb 是 exec,但按重定向目的地判(echo x > /外部)", () => {
+    const a = act("exec", {
+      command: "echo x > /elsewhere/new",
+      targets: [{ kind: "file", raw: "/elsewhere/new" }],
+    });
+    const hit = decide(a, ctx({ resources: [facts("/elsewhere/new", { exists: false, inside_cwd: false, inside_repo: false, resolved: "/elsewhere/new" })] }));
+    expect(hit.verdict).toBe("SOFT");
+    expect(hit.rule_id).toBe("fs.outside_cwd");
+  });
+
+  test("★ 读外部文件不触发 outside_cwd(它只管写/删)", () => {
+    const a = act("read", { command: "cat /elsewhere/secret", targets: [{ kind: "file", raw: "/elsewhere/secret" }] });
+    const hit = decide(a, ctx({ resources: [facts("/elsewhere/secret", { inside_cwd: false, inside_repo: false, resolved: "/elsewhere/secret" })] }));
+    // 读外部不该被 outside_cwd 判;可能被别的规则判,但至少不是这条
+    expect(hit.rule_id).not.toBe("fs.outside_cwd");
+  });
+
+  test("★ cat a > /外部/b:只对重定向目标 b 触发,不因参数 a 触发", () => {
+    const a = act("read", {
+      command: "cat a > /elsewhere/b",
+      targets: [{ kind: "file", raw: "a" }, { kind: "file", raw: "/elsewhere/b" }],
+    });
+    const hit = decide(a, ctx({ resources: [
+      facts("a"),
+      facts("/elsewhere/b", { exists: false, inside_cwd: false, inside_repo: false, resolved: "/elsewhere/b" }),
+    ] }));
+    expect(hit.verdict).toBe("SOFT");
+    expect(hit.rule_id).toBe("fs.outside_cwd");
+  });
+});

@@ -129,15 +129,15 @@ HTTP 端点(§8):`POST /hook/claude-code`、`POST /decide`(收 `{action}` 返回
 ## 已知限制
 
 - 仓库没有 `refs/remotes/origin/HEAD` 时(`git init` 后手动 `git remote add` 的仓库),不知道默认分支叫什么,任何分支上的强推都会问一次。跑一次 `git remote set-head origin -a` 即可消除。
-- 写入或删除一个**不存在**且在 cwd 之外的目标(`cp key /elsewhere/new`)目前不问;已存在的会问。
+- 删除一个**不存在**的目标不问(空操作,无害);写一个不存在的目标会按它将被创建的位置判,落在 cwd 外会问。
 - 规则结论缓存 60 秒。同一 cwd、同一命令在这个窗口内环境变了(比如目录换成软链接)不会重新探测;换链接这个动作本身会先经过网关并留下日志。
-- 不展开 shell 变量,不读 `bash script.sh` 的脚本内容。
+- 不展开 shell 变量,不读 `bash script.sh` 的脚本内容。`~` 和 `$HOME` 只在敏感目录规则里按字面认,越界判断不展开它们。
 - M1 没有模型:所有 `SOFT` 都变成 `ask`。
 
 ## 开发
 
 ```sh
-bun test            # 715 个测试,含 tests/golden/cases.yaml 的 48 条 golden 用例
+bun test            # 733 个测试,含 tests/golden/cases.yaml 的 53 条 golden 用例
 bun run typecheck   # tsc --noEmit,strict
 ```
 

@@ -88,16 +88,47 @@ describe("isInside:按路径分段比较,不是字符串前缀", () => {
 
 // ---------------------------------------------------------------------------
 describe("fs 探针:目标不存在", () => {
-  test("不存在的路径 → exists false,resolved null,其余字段保守", () => {
-    const [f] = fsFacts([res(join(root, "nope/nothing"))], root);
+  // ★ D12.11:不存在的普通路径带**预期落点**。exists 仍是 false(东西不在),
+  //   但 resolved 是它将被创建的位置(最近存在祖先 realpath + 剩余部分),
+  //   于是 inside_cwd 对"越界写新文件"也能判。
+  test("不存在但在 cwd 内 → exists false,resolved 为预期落点,inside_cwd true", () => {
+    const [f] = fsFacts([res(join(root, "nope/nothing"))], root, root);
     expect(f?.exists).toBe(false);
-    expect(f?.resolved).toBeNull();
+    expect(f?.resolved).toBe(join(root, "nope/nothing"));
     expect(f?.is_symlink).toBe(false);
     expect(f?.symlink_target).toBeNull();
-    expect(f?.is_dir).toBe(false);
-    expect(f?.inside_cwd).toBe(false);
-    expect(f?.inside_repo).toBe(false);
+    expect(f?.is_dir).toBe(false); // 还没创建,谈不上目录
+    expect(f?.inside_cwd).toBe(true);
+    expect(f?.inside_repo).toBe(true);
     expect(f?.gitignored).toBeNull();
+  });
+
+  test("★ 不存在且在 cwd 外 → resolved 落在外面,inside_cwd false(D12.11 的判据)", () => {
+    const outside = tmp("zgate-enrich-out-");
+    try {
+      const [f] = fsFacts([res(join(outside, "new"))], root, root);
+      expect(f?.exists).toBe(false);
+      expect(f?.resolved).toBe(join(outside, "new"));
+      expect(f?.inside_cwd).toBe(false);
+      expect(f?.inside_repo).toBe(false);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test("不存在路径的预期落点会折叠沿途软链接", () => {
+    // link -> outside;link/new 不存在,预期落点应落在 outside 里,不是 cwd 里
+    const outside = tmp("zgate-enrich-lnk-");
+    try {
+      symlinkSync(outside, join(root, "linkdir"));
+      const [f] = fsFacts([res(join(root, "linkdir/new"))], root, root);
+      expect(f?.exists).toBe(false);
+      expect(f?.resolved).toBe(join(outside, "new"));
+      expect(f?.inside_cwd).toBe(false);
+    } finally {
+      rmSync(join(root, "linkdir"), { force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   test("realpathSync 抛异常不会冒泡出去(§6 明确要求 try/catch)", () => {

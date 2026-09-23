@@ -14,7 +14,7 @@
 //   - `realpathSync` 对不存在的路径会抛,用 try/catch 回落 exists: false
 
 import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 /**
  * cwd 的规范化缓存。
@@ -78,6 +78,35 @@ export function isInside(parent: string, child: string): boolean {
  * `inside_repo` 需要仓库根,所以它是入参而不是在这里算 —— 仓库根由 git
  * 探针负责,两个探针之间不做交叉调用(那会变成顺序耦合)。
  */
+/**
+ * 不存在的路径的**预期落点**:找最近一个能 realpath 成功的祖先目录,对它
+ * realpath(折叠掉沿途的软链接),再把中途跳过的不存在部分拼回去。
+ *
+ * 为什么要它(D12.11):`cp key /elsewhere/new` 里目标还不存在,realpath 会抛,
+ * `resolved` 只能是 null,于是 `inside_cwd` 无从判断 —— 往 cwd 外写一个新文件
+ * 就静默放行了。有了预期落点,`inside_cwd` 对"还没创建的目标"也能算,规则层
+ * 就能问"这个文件会落在 cwd 里还是外面"。
+ *
+ * 根目录一定存在,循环一定终止(到根还 realpath 不了才返回 null,几乎不可能)。
+ * 祖先里若有软链接,realpath 会把它折叠进真实那棵树,`echo x > ./build/new`
+ * 里 build 指向外部也能判出越界。
+ */
+function projectPath(joined: string): string | null {
+  const tail: string[] = [];
+  let dir = joined;
+  while (true) {
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    tail.push(basename(dir));
+    dir = parent;
+    try {
+      return join(realpathSync(dir), ...tail.reverse());
+    } catch {
+      // 这一层也不存在,继续往上找
+    }
+  }
+}
+
 function factsFor(raw: string, cwd: string, repoRoot: string | null): ResourceFacts {
   // 相对路径按 cwd 解析。
   const joined = isAbsolute(raw) ? raw : resolve(cwd, raw);
@@ -107,8 +136,16 @@ function factsFor(raw: string, cwd: string, repoRoot: string | null): ResourceFa
     isDir = statSync(resolved).isDirectory();
   } catch {
     // 走到这里有两种可能:路径不存在,或路径是悬空软链接。
-    // 前者 exists 保持 false;后者 exists 已在上面置为 true。
-    // 两种情况 resolved 都是 null,规则层据此保守处理。
+    // 前者 exists 保持 false;后者 exists 已在上面置为 true、resolved 保持 null。
+  }
+
+  // 真正不存在的普通路径(不是悬空软链接 —— 那种 exists 是 true):算出它
+  // 将被创建在哪里,填进 resolved,让 inside_cwd 对"越界写新文件"也能判
+  // (D12.11)。这就是 exists:false 但 resolved 非 null 的那个新组合:
+  // resolved 从此表示"目标的真实位置,或不存在时它将被创建的位置";
+  // 东西到底在不在,看 exists,不要拿 resolved 是否为 null 去推。
+  if (!exists) {
+    resolved = projectPath(joined);
   }
 
   return {
@@ -118,7 +155,8 @@ function factsFor(raw: string, cwd: string, repoRoot: string | null): ResourceFa
     is_symlink: isSymlink,
     symlink_target: symlinkTarget,
     is_dir: isDir,
-    // resolved 为 null 时(不存在)一律 false:不存在的东西谈不上"在里面"。
+    // resolved 为 null(悬空软链接 / url)时一律 false。不存在的普通路径
+    // 现在带预期落点(见上),所以 inside_cwd 对它也是有意义的。
     //
     // 两边都必须是规范路径:cwd 由 git 探针传给 fs 探针时已经 realpath 过
     // (见 git.ts 的 canonicalize),resolved 本身就是 realpathSync 的结果。
