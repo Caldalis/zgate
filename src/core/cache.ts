@@ -31,6 +31,7 @@
 
 import type { Action } from "./action.ts";
 import type { Context } from "./context.ts";
+import type { ModelDecision } from "./model.ts";
 import type { RuleHit } from "../rules/index.ts";
 
 /**
@@ -61,6 +62,8 @@ export interface CachedStage {
   readonly hit: RuleHit;
   /** pre 轮判死时为 null —— 那条路没探测,不存在 Context。 */
   readonly context: Context | null;
+  /** §3.1:M2 起模型的结论也缓存。只有 SOFT 且模型判过才有;失败不缓存 */
+  readonly model: ModelDecision | null;
 }
 
 interface Entry extends CachedStage {
@@ -121,7 +124,7 @@ export function getCached(action: Action, salt = ""): CachedStage | null {
     store.delete(key);
     return null;
   }
-  return { hit: e.hit, context: e.context };
+  return { hit: e.hit, context: e.context, model: e.model };
 }
 
 /** 存。由管线在规则段出结论后调用。`context` 为 null 只在 pre 轮判死时出现。 */
@@ -132,7 +135,14 @@ export function setCached(
   salt = "",
 ): void {
   if (store.size >= MAX_ENTRIES) store.clear();
-  store.set(keyOf(action, salt), { at: Date.now(), hit, context });
+  store.set(keyOf(action, salt), { at: Date.now(), hit, context, model: null });
+}
+
+/** 模型判完后挂到已有条目上;条目已过期或被清掉就算了(不延长 TTL)。 */
+export function setCachedModel(action: Action, salt: string, model: ModelDecision): void {
+  const key = keyOf(action, salt);
+  const e = store.get(key);
+  if (e !== undefined) store.set(key, { ...e, model });
 }
 
 /** 测试 / 维护命令用。 */

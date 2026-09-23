@@ -24,6 +24,7 @@ import { z } from "zod";
 import { ActionSchema, type Action } from "./action.ts";
 import { ContextSchema, type Context } from "./context.ts";
 import { DecisionSchema, type Decision } from "./decision.ts";
+import { ModelDetailsSchema, type ModelDetails } from "./model.ts";
 import type { AgentInfo } from "./action.ts";
 
 /** §9:`"v": 1` 必须存在。读取端按版本分支。 */
@@ -60,6 +61,8 @@ export const JournalLineSchema = z.object({
   context: ContextSchema.nullable(),
   decision: DecisionSchema,
   outcome: OutcomeSchema.nullable(),
+  // M2:模型参与过的决策才有。可选字段,v 仍是 1(D14.7)
+  model_details: ModelDetailsSchema.optional(),
 });
 export type JournalLine = z.infer<typeof JournalLineSchema>;
 
@@ -92,8 +95,15 @@ export type JournalEntry = z.infer<typeof JournalEntrySchema>;
  * 取数据是最自然的切法(`读 9 月 1 日到 7 日`),而按其他维度切都要
  * 先扫全部文件再过滤。
  */
+let configuredDir: string | null = null;
+
+/** 配置文件的 journal_path。环境变量 ZGATE_JOURNAL_DIR 仍优先于它。 */
+export function configureJournalDir(dir: string | null): void {
+  configuredDir = dir;
+}
+
 export function journalDir(): string {
-  return process.env["ZGATE_JOURNAL_DIR"] ?? join(homedir(), ".zgate", "journal");
+  return process.env["ZGATE_JOURNAL_DIR"] ?? configuredDir ?? join(homedir(), ".zgate", "journal");
 }
 
 /** 本地日期,不是 UTC —— 用户看的"今天"是自己的今天。 */
@@ -213,6 +223,7 @@ export function record(
   context: Context | null,
   decision: Decision,
   now = new Date(),
+  modelDetails: ModelDetails | null = null,
 ): void {
   enqueue(
     {
@@ -225,6 +236,7 @@ export function record(
       context,
       decision,
       outcome: null,
+      ...(modelDetails === null ? {} : { model_details: modelDetails }),
     },
     now,
   );
@@ -262,6 +274,8 @@ export interface ReplayedDecision {
   readonly decision: Decision;
   readonly outcome: Outcome | null;
   readonly ts: string;
+  /** 模型参与过才有,否则 null */
+  readonly model_details: ModelDetails | null;
 }
 
 /**
@@ -316,6 +330,7 @@ export function replay(text: string): { entries: ReplayedDecision[]; badLines: n
       decision: d.decision as Decision,
       outcome: d.outcome,
       ts: d.ts,
+      model_details: d.model_details ?? null,
     });
     order.push(d.decision_id);
   }

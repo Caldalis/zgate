@@ -19,20 +19,25 @@ import { join } from "node:path";
 
 import { parseCommand } from "./shell/index.ts";
 import { ActionSchema, type Action } from "./core/action.ts";
-import { record, replayFile, flushJournal, journalDir, journalFileFor, shutdownJournal } from "./core/journal.ts";
-import { decideAction, DEFAULT_MODEL_TIMEOUT_MS } from "./core/pipeline.ts";
+import { configureJournalDir, record, replayFile, flushJournal, journalDir, journalFileFor, shutdownJournal } from "./core/journal.ts";
+import type { ModelBackend } from "./core/model.ts";
+import { decideAction, decideActionAsync } from "./core/pipeline.ts";
 import { clearCache } from "./core/cache.ts";
+import { ConfigError, configPath, loadConfig, type Config } from "./config.ts";
+import { createBackend } from "./model/index.ts";
 import { toActions, type HookInput } from "./adapters/claude-code.ts";
 import { createServer, defaultConfig, VERSION } from "./server.ts";
 
 const USAGE = `zgate ${VERSION} — 本地 Agent 工具调用决策网关
 
 用法:
-  zgate serve [--port N] [--host H] [--backend NAME]
+  zgate serve [--port N] [--host H]
       起常驻服务(默认 127.0.0.1:8787)。Claude Code 通过 http 钩子调它。
+      模型后端按 ~/.zgate/config.json(或 ZGATE_CONFIG)配置;没有配置文件就只跑规则层。
 
-  zgate check <command>... [--cwd DIR] [--json]
+  zgate check <command>... [--cwd DIR] [--json] [--model]
       判一条命令,打印裁决与理由。不写日志。
+      --model 时规则层判 SOFT 的会按配置文件走一次模型。
       例:zgate check "rm -rf ./build"
 
   zgate journal replay <file>
@@ -83,18 +88,44 @@ function flagString(args: Args, name: string, fallback: string): string {
 // serve
 // ---------------------------------------------------------------------------
 
+/**
+ * 读 ~/.zgate/config.json 并建后端。§5.3:parse 失败拒绝启动 —— 这里把
+ * ConfigError 转成 stderr 一行 + null,调用方退出码 1。
+ */
+function loadBackend(): { config: Config; backend: ModelBackend | null } | null {
+  try {
+    const config = loadConfig();
+    return { config, backend: createBackend(config.model) };
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      process.stderr.write(`配置错误:${err.message}\n`);
+      return null;
+    }
+    throw err;
+  }
+}
+
+function describeBackend(backend: ModelBackend | null): string {
+  if (backend === null) return "null(没配模型,SOFT 一律 ask)";
+  return `${backend.name},超时 ${backend.timeoutMs}ms`;
+}
+
 function cmdServe(args: Args): number {
+  const loaded = loadBackend();
+  if (loaded === null) return 1;
+  if (loaded.config.journal_path !== undefined) configureJournalDir(loaded.config.journal_path);
+
   const config = defaultConfig({
     port: Number(flagString(args, "port", String(defaultConfig().port))),
     host: flagString(args, "host", defaultConfig().host),
-    backend: flagString(args, "backend", defaultConfig().backend),
-    modelTimeoutMs: Number(flagString(args, "model-timeout", String(DEFAULT_MODEL_TIMEOUT_MS))),
+    backend: loaded.backend,
   });
 
   const server = createServer(config);
   console.log(`zgate ${VERSION} 监听 http://${config.host}:${server.port}`);
   console.log(`journal 目录:${journalDir()}`);
-  console.log(`backend:${config.backend}(M1 只有 null)`);
+  console.log(`配置文件:${configPath()}`);
+  console.log(`backend:${describeBackend(config.backend)}`);
   console.log("");
   console.log("把这段加进 Claude Code 的 settings.json 即可接入:");
   console.log(
@@ -137,7 +168,7 @@ function actionsFor(command: string, cwd: string): readonly Action[] {
   return toActions(hook, crypto.randomUUID());
 }
 
-function cmdCheck(args: Args): number {
+async function cmdCheck(args: Args): Promise<number> {
   const words = args.positional.slice(1);
   if (words.length === 0) {
     process.stderr.write("zgate check 需要一条命令\n");
@@ -149,8 +180,20 @@ function cmdCheck(args: Args): number {
   const cwd = flagString(args, "cwd", process.cwd());
   const asJson = args.flags.get("json") === true;
 
+  // --model:按配置文件接模型,SOFT 走一次真实的模型段。默认只跑规则层。
+  let backend: ModelBackend | null = null;
+  if (args.flags.get("model") === true) {
+    const loaded = loadBackend();
+    if (loaded === null) return 1;
+    backend = loaded.backend;
+    if (backend === null) process.stderr.write(`配置文件 ${configPath()} 没配 model,只跑规则层\n`);
+  }
+
   const actions = actionsFor(command, cwd);
-  const results = actions.map((a) => ({ action: a, decision: decideAction(a, { noCache: true }) }));
+  const results: { action: Action; decision: Awaited<ReturnType<typeof decideActionAsync>> }[] = [];
+  for (const a of actions) {
+    results.push({ action: a, decision: await decideActionAsync(a, { noCache: true, backend }) });
+  }
 
   if (asJson) {
     process.stdout.write(JSON.stringify(results.map((r) => r.decision), null, 2) + "\n");
@@ -178,6 +221,7 @@ function cmdCheck(args: Args): number {
     if (decision.reason !== "") process.stdout.write(`  ${decision.reason}`);
     process.stdout.write(`\n  (source=${decision.source}`);
     if (decision.rule_id !== null) process.stdout.write(`, rule=${decision.rule_id}`);
+    if (decision.confidence !== null) process.stdout.write(`, confidence=${decision.confidence.toFixed(3)}`);
     process.stdout.write(`, ${decision.latency_ms.toFixed(3)}ms)\n`);
     void action;
   }
@@ -374,7 +418,7 @@ function cmdBench(args: Args): number | Promise<number> {
 // 入口
 // ---------------------------------------------------------------------------
 
-/** 只有 `bench --http` 是异步的(要 await fetch);其余命令同步返回退出码。 */
+/** `check` 与 `bench --http` 是异步的(要 await 模型 / fetch);其余命令同步返回退出码。 */
 export function main(argv: readonly string[]): number | Promise<number> {
   const args = parseArgs(argv);
   const cmd = args.positional[0];

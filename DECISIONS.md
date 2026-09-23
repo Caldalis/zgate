@@ -1442,3 +1442,132 @@ HTTP 层(body 解析 + 路由 + 响应构造)约占端到端的 85%,管线本身
 **遗留:**
 - `rm -rf ./migrations` 判 ALLOW 不是漏判,那是 M3 策略的事(项目简介已列为例子)。
 
+
+---
+
+## M2 步 1 — 模型层(§5):接口、三种后端、配置、管线集成(2026-09-23)
+
+### D14.1 — `ModelBackend.classify` 收 `ModelRequest`,不是 `(action, context)`
+- **选了什么**:`classify(req: {action, context, flaggedRule}, signal)`,返回
+  `{verdict, confidence: number | null, latency_ms, details}`。放在 `src/core/model.ts`,
+  M1 的 `src/backends/` 整个删掉(NullBackend 的语义现在由 `backend: null` 承担)。
+- **为什么**:§5.2 A.5 的 prompt 要 `flagged_rule`,它是规则层的产物,不在 Action 也
+  不在 Context 里;M3 的策略文本也要从这个口进。`confidence` 允许 null 是 §5.2 B.3
+  的要求(云端不算)。`details` 是 journal 的 `model_details`,由后端自己填 ——
+  chain 里有两次延迟、有没有升级,只有后端知道。
+- **放弃了什么**:§5.1 字面的 `confidence: number`。用 0 冒充"不知道"会污染 M4 的
+  数据(0 和 null 在训练里是两回事)。
+
+### D14.2 — 管线只在 SOFT 上问模型;PASS 不问
+- §5.4 的代码字面是"规则层判 allow / deny 直接返回",§3.2 的表却写 PASS 也是
+  "模型自由裁量"。按 §5.4 做:PASS 直接放行。理由是延迟 —— 9B 一次 200–1000ms,
+  让每条 `ls` 都付这个代价等于把项目的存在理由(§0)反过来。模型只能把 ask 改成
+  allow,所以 SOFT-only 之下唯一会降安全的错误是"该问却放行",这正是 D12.15 评测
+  的指标。
+- `merge()` 与 M1 的降级表测试原样保留,它们仍然描述 §3.2;管线里模型段的组装在
+  `assemble()`,HARD_DENY 与 PASS 走 `merge(rule, null)`。
+
+### D14.3 — prompt 里 `command` 用 `Action.command`(非 exec 为 null),不用 `tool_input` 原文
+- 实测(2026-09-23,同一 21 条 case):换成 `tool_input.command` 原文后 16/21 降到
+  14/21,且出现 3 条该问却放行(`other-project-rm` / `shared-lib-rm` / `backups-rm`:
+  绝对路径的 `rm -rf` 全被放了)。原文里的绝对路径让模型盯着字符串而不是 resources
+  里的 `inside_cwd:false`。§5.2 A.5 的"Judge from the environment facts, not the
+  command string alone"正是这个意思。所以 D12.15 的 prompt 形状逐字保留。
+
+### D14.4 — ★ 置信度:一次调用读 top_logprobs,缺词才回落强制续写(与所有者确认)
+- **现象**:llama.cpp(b10964)在 grammar 约束下报的 `logprob` 是**采样前**的原始
+  分布,不是约束后的。自由那次开 `logprobs: true, top_logprobs: 10`,第一个 token
+  的候选里 allow 与 ask 各自的 logprob,和 §5.2 A.4 分别强制续写读到的**逐条相同**
+  (21/21,P(allow) 最大差 2.9e-8)。
+- **选了什么**:先读 top_logprobs;两个词不全在(多 token 词、别的 tokenizer)才
+  退回三次调用。省两次往返,实测 p50 1082ms → ~800ms(占模型延迟 25%)。
+- **放弃了什么**:规格字面的恒三次调用。评测脚本 `/tmp/zg-eval/eval.py` 走的是
+  `/completion` 强制续写,数值等价,不用改。
+- **顺带**:9B 每次都会在 top-3 里给一个 `deny`(logprob ≈ -7 到 -8),grammar 把它
+  压掉了。这是"模型只在 allow/ask 间选"靠 grammar 保证、不靠模型自觉的证据。
+
+### D14.5 — ★ chain 阈值比的是 P(verdict),默认 0.75(与所有者确认)
+- **矛盾**:§5.2 C 的示例 `escalation_threshold: 0.4` 与"P(verdict) < 阈值升级"
+  合在一起永远不触发 —— 温度 0 下 P(verdict) 恒 ≥ 0.5。D12.15 的 0.379 是对
+  **P(allow)** 的决策阈值(用来选 allow 还是 ask),不是升级阈值,两者混在一起了。
+- **选了什么**:对称的"模型不确定"信号:P(verdict) < 阈值就升级,schema 默认 0.75。
+  在 21 条上会上云 7 条(4 条正确但不自信的 allow、2 条误打断、1 条自信不够的 ask)。
+  阈值 ≤ 0.5 等于关掉升级,README 写明。
+- **放弃了什么**:"只在本地说 allow 且 P(allow) 低时升级"(云端只当 allow 的复核)。
+  它更省钱,但救不回误打断,而误打断才是项目简介说的卖点。
+
+### D14.6 — chain:本地失败也升级;云端失败抛出
+- 本地超时 / 不可达在 chain 里视为"本地没意见",升级云端(chain 就是本地优先、
+  云端兜底);云端失败按 §5.2 C.4 抛出,管线降级 ask,**不**回退本地答案。
+- chain 自己的总预算 = local + cloud 超时之和,封顶 5000(§3.2)。本地那段用
+  `withDeadline` 单独限时,不让本地把云端的预算吃光。云端那段拿剩余预算。
+
+### D14.7 — journal 顶层加可选 `model_details`,`v` 仍是 1(与所有者确认)
+- 纯追加字段,M1 的行仍过 schema,Python 侧不用按版本分支。规则层直接定性的
+  行**没有这个键**(不写 null),模型参与过(含降级)的才有。
+- 字段:`backend / model_name / local_latency_ms / cloud_latency_ms / escalated /
+  local_verdict / local_confidence / error / http_status`。后四个是 spec-m2 §5 之外
+  加的:`local_verdict` + `local_confidence` 让 M4 能算"云端推翻了本地多少次";
+  `error`(timeout / unreachable / rejected / format)+ `http_status` 让降级率能按
+  原因拆开 —— 没有它们,journal 里 `source: "fallback"` 只知道降级了,不知道为什么。
+- `ReplayedDecision` 相应加 `model_details: ModelDetails | null`。
+
+### D14.8 — 缓存:模型结论挂在规则段的缓存条目上
+- §3.1 说 M2 后模型结果也可缓存。实现是 `setCachedModel()` 把 ModelDecision 挂到
+  已有条目上,不延长 TTL、不新建 key —— 模型结论依赖的正是那份 Context,和 post 轮
+  同一个陈旧度(60 秒)。命中时 `source: "cache"`,`confidence` 与 `model_details`
+  原样带回。模型失败**不缓存**,下一次照问。
+
+### D14.9 — 降级的 reason:规则那句 + 括号里的原因
+- §5.4 示例的 reason 是 "模型不可达,降级"。用户在确认框里要看的是"为什么问",
+  不是网关的内部状态,所以写成 `涉及密钥文件 .env(模型超时)`。四种原因:模型超时 /
+  模型不可达 / 模型拒绝请求(4xx、429)/ 模型输出异常。`confidence: 0`,
+  `source: "fallback"`。
+
+### D14.10 — 复合语句的模型段:一条 HARD_DENY 整批不问;一条落 ask 后面不再问
+- `decideAllAsync` 先把所有 Action 的规则段跑完再问模型:整批的结论是取最严,
+  有 HARD_DENY 就已经是 deny,问模型是浪费也是语义错误(危险命令不该进模型输入)。
+  第一条 SOFT 落到 ask 后,整批已是 ask,后面的 SOFT 按 §3.2 右列记 ask(source
+  fallback,不带 model_details 的 error)。省的是几百毫秒,不是钱。
+
+### D14.11 — server 走异步入口;同步入口留给 check / bench / golden
+- handoff 里预告的"M2 第一件事":`server.ts` 改调 `decideAllAsync`。同步的
+  `decideAll` / `decideAction` 保留且**不看** `backend` —— golden 与 bench 测的是
+  规则层,不该被模型可用性左右。`zgate check` 默认同步;`--model` 才按配置文件
+  走一次真实模型段。
+- `ZGATE_BACKEND` / `--backend` / `ZGATE_MODEL_TIMEOUT_MS` 这三个 M1 的环境变量
+  与旗标删掉:后端和超时现在全部来自 `~/.zgate/config.json`(§5.3),两套入口
+  会打架。`ZGATE_CONFIG` 可以覆盖配置文件路径(测试与多份配置用)。
+
+### D14.12 — 配置:cloud 的环境变量在构造时就检查;`journal_path` 的优先级
+- `api_key_env` 指向的变量缺失 → `ConfigError` → serve 退出码 1。放到运行时的
+  话每次调用都 401 然后静默降级,用户以为模型在工作。
+- `journal_path` 生效,但环境变量 `ZGATE_JOURNAL_DIR` 优先(测试与 bench 靠它把
+  日志引到临时目录,不能被配置文件抢走)。
+- 配置文件是严格 JSON,不支持注释 —— SPEC 示例里的 `//` 只是说明。
+
+### D14.13 — 本步的实测数字(2026-09-23,Qwen3.5-9B Q4_K_M,llama-server b10964,单 slot)
+
+| 指标 | M1 结束 | M2 步 1 |
+|---|---|---|
+| 测试数 | 733 | **804** |
+| 生产依赖 | zod | **zod** |
+
+规则路径(`bench --n 2000` / `bench --http --n 1000`,冷):进程内 p50 0.020ms、
+HTTP p50 0.075ms,与 M1 同量级,§13 预算未动。
+
+`zgate check --model` 走真实 9B(临时仓库,`.env` 真、`tests/fixtures/test.pem` 假、
+`build` 软链接到外面):
+
+| 命令 | 规则 | 模型 | P(verdict) | 延迟 |
+|---|---|---|---|---|
+| `cat .env` | SOFT | ask | 0.945 | 318ms |
+| `cat tests/fixtures/test.pem` | SOFT | **allow** | 0.613 | 276ms |
+| `rm -rf ./build`(软链接向外) | SOFT | ask | 0.923 | 185ms |
+| `rm -rf ../outside` | SOFT | ask | 0.964 | 1080ms |
+| `rm -rf /` | HARD_DENY | 不问 | — | 0.2ms |
+
+第一条冷调用(刚起的 server、prompt 全新)超时 2000ms 降级为 ask,journal 记
+`error: timeout`;之后都在 1s 内。**§1 的"SOFT p50 < 1000ms(本地 9B)"成立**,
+但 llama-server 刚启动或换了 4 slot 时首次调用可能超过 2s,README 已写。
+21 条评测集上 chat 端点一致率仍是 16/21、0/12 漏放(与 D12.15 相同)。

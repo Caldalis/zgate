@@ -21,7 +21,8 @@
 
 import { ActionSchema, type Action } from "./core/action.ts";
 import { OutcomeSchema, record, recordOutcome, startJournal, shutdownJournal, journalStats, type Outcome } from "./core/journal.ts";
-import { decideAll, DEFAULT_MODEL_TIMEOUT_MS, type PipelineOptions } from "./core/pipeline.ts";
+import type { ModelBackend } from "./core/model.ts";
+import { decideAllAsync, type PipelineOptions } from "./core/pipeline.ts";
 import { parseHookInput, toActions, toHookResponse, type HookResponse } from "./adapters/claude-code.ts";
 
 /** §8:默认 8787,只绑 loopback。 */
@@ -33,17 +34,15 @@ export const VERSION = "0.1.0";
 export interface ServerConfig {
   readonly port: number;
   readonly host: string;
-  readonly backend: string;
-  readonly modelTimeoutMs: number;
+  /** §5 的模型后端;null = 不走模型(M1 行为)。由 cli 按 ~/.zgate/config.json 建 */
+  readonly backend: ModelBackend | null;
 }
 
 export function defaultConfig(over: Partial<ServerConfig> = {}): ServerConfig {
   return {
-    // 环境变量覆盖,给测试和高级用户用。不要做配置文件 —— M1 没有这个需求。
     port: Number(process.env["ZGATE_PORT"] ?? DEFAULT_PORT),
     host: process.env["ZGATE_HOST"] ?? DEFAULT_HOST,
-    backend: process.env["ZGATE_BACKEND"] ?? "null",
-    modelTimeoutMs: Number(process.env["ZGATE_MODEL_TIMEOUT_MS"] ?? DEFAULT_MODEL_TIMEOUT_MS),
+    backend: null,
     ...over,
   };
 }
@@ -109,10 +108,11 @@ async function handleDecide(req: Request, opts: PipelineOptions): Promise<Respon
   }
 
   const action = parsed.data as Action;
-  const result = decideAll([action], opts);
+  const result = await decideAllAsync([action], opts);
   // 记整体决策(它的 decision_id 就是回给调用方的那个,/outcome 靠它对上),
-  // Context 取自这唯一一条 Action 的判定。
-  record(action, result.perAction[0]?.context ?? null, result.decision);
+  // Context 与 model_details 取自这唯一一条 Action 的判定。
+  const only = result.perAction[0];
+  record(action, only?.context ?? null, result.decision, new Date(), only?.modelDetails ?? null);
   return json(result.decision);
 }
 
@@ -155,16 +155,12 @@ async function handleHook(req: Request, opts: PipelineOptions): Promise<Response
   }
 
   try {
-    const result = decideAll(actions, opts);
-    // §9:每条 Action 各记一行,带上判它时看到的 Context。
-    //
-    // 为什么按条记而不是记整体:训练数据要的是"这条命令在这个环境下该判
-    // 什么",复合语句里的每一条都是独立样本(`mkdir a && rm -rf b` 里两条
-    // 各有各的判例)。整体结论**不单独记一行**:它没有自己的 Action,而
-    // Claude Code 的 hook 响应也带不回 decision_id,记了也对不上 /outcome。
-    // 单条 Action 时(绝大多数情况)整体结论与那一行只差一个 id。见 D11.2。
-    for (const { action, context, decision } of result.perAction) {
-      record(action, context, decision);
+    const result = await decideAllAsync(actions, opts);
+    // §9:每条 Action 各记一行,带上判它时看到的 Context 与 model_details。
+    // 整体结论不单独记:它没有自己的 Action,hook 响应也带不回 decision_id。见 D11.2。
+    const now = new Date();
+    for (const { action, context, decision, modelDetails } of result.perAction) {
+      record(action, context, decision, now, modelDetails);
     }
     return json(toHookResponse(result.decision));
   } catch {
@@ -207,7 +203,8 @@ function handleHealthz(config: ServerConfig): Response {
     ok: true,
     version: VERSION,
     uptime_s: Math.round((Date.now() - startedAt) / 1000),
-    backend: config.backend,
+    // §8:没配模型时是 "null",与 M1 一致
+    backend: config.backend?.name ?? "null",
   });
 }
 
@@ -217,10 +214,8 @@ export function createServer(config: ServerConfig = defaultConfig()) {
 
   const opts: PipelineOptions = {
     backend: config.backend,
-    modelTimeoutMs: config.modelTimeoutMs,
     // §6 的 env_hints 从这里进。传引用不传快照:白名单外的变量在探针里
-    // 就被过滤掉了,进日志的只有那四项。第一版漏了这一行,daemon 里
-    // env_hints 永远是三个 "false"(D12.3)。
+    // 就被过滤掉了,进日志的只有那四项(D12.3)。
     env: process.env,
   };
 

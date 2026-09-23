@@ -15,11 +15,11 @@ import type { Action, Verb } from "../src/core/action.ts";
 import type { Decision } from "../src/core/decision.ts";
 import { clearCache, cacheSize, getCached, setCached } from "../src/core/cache.ts";
 import { merge, mergeAll, strictest } from "../src/core/merge.ts";
-import { DEFAULT_MODEL_TIMEOUT_MS, decideAction, decideActionAsync, decideAll, decideWithContext } from "../src/core/pipeline.ts";
+import { decideAction, decideActionAsync, decideAll, decideWithContext, decideWithContextAsync } from "../src/core/pipeline.ts";
+import { ModelHttpError } from "../src/core/model.ts";
 import { toActions } from "../src/adapters/claude-code.ts";
-import { BACKENDS } from "../src/backends/index.ts";
 import { clearGitCache, clearCwdCache } from "../src/enrichers/index.ts";
-import type { ModelBackend, ModelVerdict } from "../src/backends/index.ts";
+import type { ModelBackend, ModelDecision, ModelRequest, ModelVerdict } from "../src/core/model.ts";
 
 let root: string;
 
@@ -61,10 +61,11 @@ function action(
 
 /** 一个总是返回固定结论的后端,用来验证 §3.2 的"模型可用"那一列。 */
 class FixedBackend implements ModelBackend {
-  readonly name = "fixed";
-  constructor(private readonly v: ModelVerdict | null) {}
-  async classify(): Promise<ModelVerdict | null> {
-    return this.v;
+  readonly name = "local";
+  readonly timeoutMs = 200;
+  constructor(private readonly v: ModelVerdict, private readonly confidence = 0.9) {}
+  async classify(): Promise<ModelDecision> {
+    return { verdict: this.v, confidence: this.confidence, latency_ms: 1, details: { backend: "local" } };
   }
 }
 
@@ -245,87 +246,184 @@ describe("缓存(§3.1)", () => {
 });
 
 // ===========================================================================
-describe("§5 模型层接口(M1 只留位置)", () => {
-  test("注册表里有 null,而且它是 M1 的唯一实现", () => {
-    expect(Object.keys(BACKENDS)).toEqual(["null"]);
-    expect(BACKENDS["null"]?.().name).toBe("null");
-  });
-
-  test("NullBackend 恒返回 null(它是『模型不可用』,不是『模型说没问题』)", async () => {
-    const b = BACKENDS["null"]?.();
-    expect(b).toBeDefined();
-    const v = await b?.classify(
-      action("exec", { command: "echo hi" }),
-      // 传个最小 Context —— NullBackend 不看它,但签名要求
-      { resources: [], repo: { is_repo: false, root: null, branch: null, is_dirty: null, default_branch: null }, env_hints: {}, elapsed_ms: 0 },
-      200,
-    );
-    expect(v).toBeNull();
-  });
-
-  test("§3.2 的硬超时默认值是 200ms", () => {
-    expect(DEFAULT_MODEL_TIMEOUT_MS).toBe(200);
-  });
-
+describe("§5 模型层接口(M2)", () => {
   test("★ HARD_DENY 根本不问模型(不会 await 一个危险命令)", async () => {
     let asked = false;
     const spy: ModelBackend = {
-      name: "spy",
-      async classify(): Promise<ModelVerdict | null> {
+      name: "local",
+      timeoutMs: 200,
+      async classify(): Promise<ModelDecision> {
         asked = true;
-        return { verdict: "allow", reason: "it's fine", confidence: 0.9 };
+        return { verdict: "allow", confidence: 0.9, latency_ms: 1, details: { backend: "local" } };
       },
     };
     const d = await decideActionAsync(
       action("delete", { command: "rm -rf /", targets: [{ kind: "file", raw: "/" }] }),
-      { backendImpl: spy, noCache: true },
+      { backend: spy, noCache: true },
     );
     expect(d.verdict).toBe("deny");
     expect(asked).toBe(false); // ← 这才是断言的重点
   });
 
   test("★ 模型说 allow 也推不翻 HARD_DENY", async () => {
-    const permissive = new FixedBackend({ verdict: "allow", reason: "fine", confidence: 1 });
     const d = await decideActionAsync(
       action("delete", { command: "rm -rf /", targets: [{ kind: "file", raw: "/" }] }),
-      { backendImpl: permissive, noCache: true },
+      { backend: new FixedBackend("allow", 1), noCache: true },
     );
     expect(d.verdict).toBe("deny");
   });
 
+  test("★ PASS 也不问模型(§5.4:规则层判 allow / deny 直接返回)", async () => {
+    let asked = false;
+    const spy: ModelBackend = {
+      name: "local",
+      timeoutMs: 200,
+      async classify(): Promise<ModelDecision> {
+        asked = true;
+        return { verdict: "ask", confidence: 0.9, latency_ms: 1, details: { backend: "local" } };
+      },
+    };
+    const d = await decideActionAsync(action("exec", { command: "bun test" }), { backend: spy, noCache: true });
+    expect(d.verdict).toBe("allow");
+    expect(d.source).toBe("fallback");
+    expect(asked).toBe(false);
+  });
+
   test("模型可用时 SOFT 可以被推翻(这是 M2 存在的意义)", async () => {
-    const permissive = new FixedBackend({ verdict: "allow", reason: "不用管", confidence: 0.9 });
     const d = await decideActionAsync(
       action("unknown", { command: "$(echo rm) -rf /" }),
-      { backendImpl: permissive, noCache: true },
+      { backend: new FixedBackend("allow", 0.83), noCache: true },
     );
     expect(d.verdict).toBe("allow");
     expect(d.source).toBe("model");
+    expect(d.reason).toBe("");
+    expect(d.confidence).toBe(0.83);
+    expect(d.rule_id).toBe("fs.unknown");
   });
 
-  test("★ 模型抛异常 → 按 §3.2 降级,不向上抛", async () => {
+  test("模型说 ask:reason 仍是规则那句,source 是 model", async () => {
+    const d = await decideActionAsync(
+      action("unknown", { command: "$(echo rm) -rf /" }),
+      { backend: new FixedBackend("ask", 0.7), noCache: true },
+    );
+    expect(d.verdict).toBe("ask");
+    expect(d.source).toBe("model");
+    expect(d.reason).not.toBe("");
+    expect(d.confidence).toBe(0.7);
+  });
+
+  test("模型收到的是 Action + Context + flagged_rule", async () => {
+    let seen: ModelRequest | null = null;
+    const spy: ModelBackend = {
+      name: "local",
+      timeoutMs: 200,
+      async classify(req): Promise<ModelDecision> {
+        seen = req;
+        return { verdict: "ask", confidence: 0.9, latency_ms: 1, details: { backend: "local" } };
+      },
+    };
+    await decideActionAsync(action("unknown", { command: "$(x)" }), { backend: spy, noCache: true });
+    expect(seen).not.toBeNull();
+    expect(seen!.action.tool_input["command"]).toBe("$(x)");
+    expect(seen!.flaggedRule).toBe("fs.unknown");
+    expect(seen!.context.repo).toBeDefined();
+  });
+
+  test("★ 模型抛异常 → 按 §3.2 降级到 ask,不向上抛,confidence 0", async () => {
     const broken: ModelBackend = {
-      name: "broken",
-      async classify(): Promise<ModelVerdict | null> {
+      name: "cloud",
+      timeoutMs: 200,
+      async classify(): Promise<ModelDecision> {
         throw new Error("connection refused");
       },
     };
-    const d = await decideActionAsync(
-      action("unknown", { command: "$(echo rm) -rf /" }),
-      { backendImpl: broken, noCache: true },
-    );
+    const d = await decideActionAsync(action("unknown", { command: "$(echo rm) -rf /" }), { backend: broken, noCache: true });
     expect(d.verdict).toBe("ask");
     expect(d.source).toBe("fallback");
+    expect(d.confidence).toBe(0);
+    expect(d.reason).toContain("模型不可达");
   });
 
-  test("★ 模型返回 null(超时) → 同样降级", async () => {
-    const slow = new FixedBackend(null);
-    const d = await decideActionAsync(
-      action("unknown", { command: "$(echo rm) -rf /" }),
-      { backendImpl: slow, noCache: true },
-    );
+  test("★ 模型超时 → 降级到 ask,请求被 abort,总耗时受 timeoutMs 约束", async () => {
+    let aborted = false;
+    const slow: ModelBackend = {
+      name: "local",
+      timeoutMs: 50,
+      classify(_req, signal): Promise<ModelDecision> {
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            aborted = true;
+            reject(signal.reason);
+          });
+        });
+      },
+    };
+    const t0 = performance.now();
+    const d = await decideActionAsync(action("unknown", { command: "$(echo rm) -rf /" }), { backend: slow, noCache: true });
+    expect(performance.now() - t0).toBeLessThan(1000);
+    expect(aborted).toBe(true);
     expect(d.verdict).toBe("ask");
     expect(d.source).toBe("fallback");
+    expect(d.reason).toContain("模型超时");
+  });
+
+  test("云端 4xx / 429 → 降级 ask,日志码 rejected 带状态码", async () => {
+    const rejecting: ModelBackend = {
+      name: "cloud",
+      timeoutMs: 200,
+      async classify(): Promise<ModelDecision> {
+        throw new ModelHttpError(429, "rate");
+      },
+    };
+    const d = await decideWithContextAsync(action("unknown", { command: "$(x)" }), { backend: rejecting, noCache: true });
+    expect(d.decision.verdict).toBe("ask");
+    expect(d.decision.source).toBe("fallback");
+    expect(d.decision.reason).toContain("模型拒绝请求");
+    expect(d.modelDetails).toEqual({ backend: "cloud", error: "rejected", http_status: 429 });
+  });
+
+  test("★ 没配后端(null)= M1 行为:SOFT → ask,source fallback,confidence null", async () => {
+    const d = await decideActionAsync(action("unknown", { command: "$(x)" }), { backend: null, noCache: true });
+    expect(d.verdict).toBe("ask");
+    expect(d.source).toBe("fallback");
+    expect(d.confidence).toBeNull();
+  });
+
+  test("★ 模型结论随规则段一起缓存:第二次 source 是 cache,且不再问模型", async () => {
+    let calls = 0;
+    const counting: ModelBackend = {
+      name: "local",
+      timeoutMs: 200,
+      async classify(): Promise<ModelDecision> {
+        calls += 1;
+        return { verdict: "allow", confidence: 0.9, latency_ms: 1, details: { backend: "local" } };
+      },
+    };
+    const a = action("unknown", { command: "$(cached)" });
+    const first = await decideActionAsync(a, { backend: counting });
+    const second = await decideActionAsync(a, { backend: counting });
+    expect(first.source).toBe("model");
+    expect(second.source).toBe("cache");
+    expect(second.verdict).toBe("allow");
+    expect(second.confidence).toBe(0.9);
+    expect(calls).toBe(1);
+  });
+
+  test("模型失败不缓存:下一次还会再问", async () => {
+    let calls = 0;
+    const flaky: ModelBackend = {
+      name: "local",
+      timeoutMs: 200,
+      async classify(): Promise<ModelDecision> {
+        calls += 1;
+        throw new Error("down");
+      },
+    };
+    const a = action("unknown", { command: "$(flaky)" });
+    await decideActionAsync(a, { backend: flaky });
+    const second = await decideActionAsync(a, { backend: flaky });
+    expect(second.source).toBe("fallback");
+    expect(calls).toBe(2);
   });
 });
 
@@ -695,9 +793,9 @@ describe("★ 审计修订的两条真实漏判,走适配器的生产路径", ()
 // (toActions)→ 管线(decideAll)。不手写 Action —— 审计时两条漏判
 // (D12.2、D12.10)都藏在"手写 verb 绕过了解析层"的测试后面。
 //
-// rule_verdict 由 Decision 反推:M1 没有模型,§3.2 右列是一一映射
-// (deny ⇔ HARD_DENY、ask ⇔ SOFT、allow ⇔ PASS)。M2 接模型后这个映射不再
-// 成立,那时驱动要改成直接读规则段的结论。见 D13.2。
+// rule_verdict 直接读规则段的结论(Decided.ruleVerdict),不再由 verdict 反推
+// (D13.2 预告的那次改动)。golden 走同步入口,不问模型:它测的是规则层与解析层,
+// 模型层有自己的 mock 测试。
 
 interface GoldenGit {
   readonly dir: string;
@@ -733,12 +831,6 @@ interface GoldenCase {
 const GOLDEN: readonly GoldenCase[] = Bun.YAML.parse(
   readFileSync(new URL("./golden/cases.yaml", import.meta.url), "utf8"),
 ) as GoldenCase[];
-
-function ruleVerdictOf(d: Decision): "HARD_DENY" | "SOFT" | "PASS" {
-  if (d.verdict === "deny") return "HARD_DENY";
-  if (d.verdict === "ask") return "SOFT";
-  return "PASS";
-}
 
 function asList<T>(x: T | readonly T[] | undefined): readonly T[] {
   if (x === undefined) return [];
@@ -800,7 +892,9 @@ describe("§12 golden(tests/golden/cases.yaml)", () => {
         expect(result.perAction[result.winningIndex]?.action.verb, "verb").toBe(e.verb);
       }
       expect(result.decision.verdict, "verdict").toBe(e.verdict);
-      expect(ruleVerdictOf(result.decision), "rule_verdict").toBe(e.rule_verdict);
+      // 零条 Action 没有规则段(§15.3 的约定:没有要裁决的东西 = allow),按 PASS 记
+      const ruleVerdict = result.perAction[result.winningIndex]?.ruleVerdict ?? "PASS";
+      expect(ruleVerdict, "rule_verdict").toBe(e.rule_verdict);
       if (e.rule_id !== undefined) expect(result.decision.rule_id, "rule_id").toBe(e.rule_id);
       if (e.verdict !== "allow") expect(result.decision.reason, "reason").not.toBe("");
       else expect(result.decision.reason, "allow 时 reason 为空").toBe("");

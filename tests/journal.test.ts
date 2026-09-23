@@ -179,6 +179,39 @@ describe("§9 日志行 schema", () => {
 });
 
 // ===========================================================================
+describe("§9 M2 扩展:model_details(可选字段,v 仍是 1)", () => {
+  test("不传 model_details 时行里没有这个键(不是 null,也不是 undefined 字面量)", () => {
+    record(action(), context(), decision());
+    flushJournal();
+    const obj = JSON.parse(readAll().trim());
+    expect("model_details" in obj).toBe(false);
+    expect(obj["v"]).toBe(1);
+  });
+
+  test("传了就原样落盘,能过 schema,字段全 snake_case", () => {
+    const details = { backend: "chain" as const, model_name: "qwen35-9b", local_latency_ms: 800.5, cloud_latency_ms: 1200, escalated: true, local_verdict: "ask" as const, local_confidence: 0.6 };
+    record(action(), context(), decision({ source: "model", confidence: 0.6 }), new Date(), details);
+    flushJournal();
+    const obj = JSON.parse(readAll().trim());
+    expect(obj["model_details"]).toEqual(details);
+    expect(JournalLineSchema.safeParse(obj).success).toBe(true);
+  });
+
+  test("M1 写出的行(没有 model_details)仍能过 M2 的 schema", () => {
+    record(action(), context(), decision());
+    flushJournal();
+    expect(JournalLineSchema.safeParse(JSON.parse(readAll().trim())).success).toBe(true);
+  });
+
+  test("model_details 形状不对 → 这一行算坏行", () => {
+    record(action(), context(), decision({ decision_id: "bad-md" }), new Date(), { backend: "quantum" } as never);
+    flushJournal();
+    const { entries, badLines } = replay(readAll());
+    expect(badLines).toBe(1);
+    expect(entries.length).toBe(0);
+  });
+});
+
 describe("§9 一行一条 + 追加语义", () => {
   test("★ 多条决策写多行,顺序与写入顺序一致", () => {
     for (let i = 0; i < 5; i += 1) {
