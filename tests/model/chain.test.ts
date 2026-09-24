@@ -23,7 +23,7 @@ function chain(local: string, cloud: string, threshold = 0.75, localTimeout = 10
     ENV,
   );
 }
-const cloudText = (text: string) => ({ content: [{ type: "text", text }] });
+const cloudText = (v: "allow" | "ask") => ({ content: [{ type: "text", text: JSON.stringify({ verdict: v }) }] });
 
 describe("置信度路由", () => {
   test("★ 本地置信度 ≥ 阈值 → 不升级,云端一次都不调", async () => {

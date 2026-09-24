@@ -46,9 +46,21 @@ export function parseExactVerdict(text: string): ModelVerdict | null {
   return w === "allow" || w === "ask" ? w : null;
 }
 
-/** 宽松:自由文本里第一个独立出现的 allow / ask(云端输出)。 */
-export function parseVerdictWord(text: string): ModelVerdict | null {
-  const m = /\b(allow|ask)\b/i.exec(text);
-  if (m === null) return null;
-  return m[1]?.toLowerCase() === "allow" ? "allow" : "ask";
+/**
+ * 严格:整段回复必须是 `{"verdict": "allow" | "ask"}` 这一个 JSON 对象(云端结构化输出)。
+ * 多一个键、少一个键、值不在枚举里、外面还包着别的字,一律 null。
+ * 绝不在文本里"找词":`I cannot allow this. Ask.` 那种句子曾被听成 allow(D14.16)。
+ */
+export function parseVerdictJson(text: string): ModelVerdict | null {
+  let obj: unknown;
+  try {
+    obj = JSON.parse(text.trim());
+  } catch {
+    return null;
+  }
+  if (typeof obj !== "object" || obj === null || Array.isArray(obj)) return null;
+  const keys = Object.keys(obj);
+  if (keys.length !== 1 || keys[0] !== "verdict") return null;
+  const v = (obj as { verdict: unknown }).verdict;
+  return v === "allow" || v === "ask" ? v : null;
 }

@@ -36,6 +36,8 @@ export const ModelDetailsSchema = z.object({
   /** 模型段失败的原因;有它就说明这条是 §3.2 的降级。rejected = HTTP 4xx(含 429) */
   error: z.enum(["timeout", "unreachable", "rejected", "format"]).optional(),
   http_status: z.number().optional(),
+  /** 云端为拿到合法格式实际生成的次数;只在 > 1 时写 */
+  attempts: z.number().optional(),
 });
 export type ModelDetails = Readonly<z.infer<typeof ModelDetailsSchema>>;
 

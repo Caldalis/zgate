@@ -75,7 +75,7 @@ zgate 只发 HTTP,不启动、不管理 llama-server。请求走 `/v1/chat/compl
              "model": "claude-sonnet-4-6", "timeout_ms": 3000 } } }
 ```
 
-`provider` 为 `"openai"` 时打 `<base_url>/v1/chat/completions`,`base_url` 可指向 Groq / DeepSeek / 自建服务。云端不算置信度(`confidence` 为 null);5xx 与网络错误重试一次,4xx / 429 不重试。
+`provider` 为 `"openai"` 时打 `<base_url>/v1/chat/completions`,`base_url` 可指向 Groq / DeepSeek / 自建服务(包括本机的 llama-server)。云端没有 grammar,所以用两家各自的结构化输出(Anthropic 的 `output_config.format`、OpenAI 的 `response_format: json_schema`)让服务端只回 `{"verdict": "allow"}` 或 `{"verdict": "ask"}`;回复必须恰好是这一个 JSON 对象,否则算格式错误,重新生成,最多 5 次,超过就降级为 `ask`。云端不算置信度(`confidence` 为 null);5xx 与网络错误重试一次,4xx / 429 不重试。
 
 **chain**(本地优先,不确定时升级云端):
 
