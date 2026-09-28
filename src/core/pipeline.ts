@@ -25,7 +25,9 @@ import {
 } from "./model.ts";
 import { enrich } from "../enrichers/index.ts";
 import { gitFacts } from "../enrichers/git.ts";
+import { loadPolicy, type Policy } from "../policy.ts";
 import { evaluate, type RuleHit, type RuleVerdict } from "../rules/index.ts";
+import { scopeHits } from "../rules/policy.ts";
 
 export interface PipelineOptions {
   /** 模型后端(§5)。缺省 / null = 不走模型,即 §3.2 右列。同步入口不看它 */
@@ -50,6 +52,10 @@ interface RuleStage {
   readonly cached: boolean;
   /** 缓存里随规则段一起存着的模型结论(只有 SOFT 且模型判过才有) */
   readonly model: ModelDecision | null;
+  /** 仓库根的策略;post 轮没跑(pre 判死)或不在仓库 / 没有文件时为 null */
+  readonly policy: Policy | null;
+  /** 命中的 scope 条目;进 prompt 的 policy_scope_hit 与 journal 的 scope_hit */
+  readonly policyHit: readonly string[];
   readonly salt: string;
   readonly elapsedMs: number;
 }
@@ -62,28 +68,45 @@ function buildContext(action: Action, opts: PipelineOptions): Context {
 /** 一批之内逐字相同的段(复合语句的两个 exec 段)共用一份规则段结论,key 与缓存同一把。 */
 type Batch = Map<string, RuleStage>;
 
+/** 缓存 salt:分支名;有策略时再拼 sha,策略一改立即换 key(spec-m3 §2.4)。无策略时与 M2 逐字节相同。 */
+function saltOf(branch: string | null, policy: Policy | null): string {
+  const b = branch ?? "";
+  return policy === null ? b : `${b}\0${policy.sha256}`;
+}
+
 /**
  * 跑规则段:cache ──▶ rules(pre) ──▶ enrich ──▶ rules(post)。
- * `salt` 是分支名,查缓存之前就要知道(git 探针自带 3 秒缓存,成本接近零)。
+ * `salt` 是分支名(加策略 sha),查缓存之前就要知道(git 探针与策略加载都自带 3 秒缓存,成本接近零)。
  * 传了 `batch` 时,批内重复的段直接复用先前那条,不查缓存也不重算(D14.19)。
  */
 function runRules(action: Action, opts: PipelineOptions, batch?: Batch): RuleStage {
   const started = performance.now();
-  const salt = opts.noCache === true ? "" : (gitFacts(action.cwd).branch ?? "");
+  const repo = gitFacts(action.cwd);
+  const policy = loadPolicy(repo.root);
+  const salt = opts.noCache === true ? "" : saltOf(repo.branch, policy);
   const key = stageKey(action, salt);
   const dup = batch?.get(key);
   if (dup !== undefined) return dup;
 
-  const stage = computeStage(action, opts, salt, started);
+  const stage = computeStage(action, opts, salt, policy, started);
   batch?.set(key, stage);
   return stage;
 }
 
-function computeStage(action: Action, opts: PipelineOptions, salt: string, started: number): RuleStage {
+/** 策略只随跑过 post 轮的结论走:pre 判死没有 Context,也就没有策略这回事(spec-m3 §5)。 */
+function policyOf(context: Context | null, action: Action, policy: Policy | null): Pick<RuleStage, "policy" | "policyHit"> {
+  if (context === null || policy === null) return { policy: null, policyHit: [] };
+  return { policy, policyHit: scopeHits(action, context, policy) };
+}
+
+function computeStage(action: Action, opts: PipelineOptions, salt: string, policy: Policy | null, started: number): RuleStage {
   if (opts.noCache !== true) {
     const cached = getCached(action, salt);
     if (cached !== null) {
-      return { hit: cached.hit, context: cached.context, cached: true, model: cached.model, salt, elapsedMs: performance.now() - started };
+      return {
+        hit: cached.hit, context: cached.context, cached: true, model: cached.model,
+        ...policyOf(cached.context, action, policy), salt, elapsedMs: performance.now() - started,
+      };
     }
   }
 
@@ -91,7 +114,7 @@ function computeStage(action: Action, opts: PipelineOptions, salt: string, start
   const pre = evaluate(action, null, "pre");
   if (pre.verdict === "HARD_DENY") {
     if (opts.noCache !== true) setCached(action, pre, null, salt);
-    return { hit: pre, context: null, cached: false, model: null, salt, elapsedMs: performance.now() - started };
+    return { hit: pre, context: null, cached: false, model: null, policy: null, policyHit: [], salt, elapsedMs: performance.now() - started };
   }
 
   const context = buildContext(action, opts);
@@ -101,7 +124,7 @@ function computeStage(action: Action, opts: PipelineOptions, salt: string, start
   const hit = pre.verdict === "SOFT" && post.verdict !== "HARD_DENY" ? pre : post;
   if (opts.noCache !== true) setCached(action, hit, context, salt);
 
-  return { hit, context, cached: false, model: null, salt, elapsedMs: performance.now() - started };
+  return { hit, context, cached: false, model: null, ...policyOf(context, action, policy), salt, elapsedMs: performance.now() - started };
 }
 
 /** 模型这一段的结果:没问 / 有结论 / 问了但失败。 */
@@ -209,7 +232,10 @@ async function finishStage(
   }
 
   const context = stage.context ?? buildContext(action, opts);
-  const req = { action, context, flaggedRule: stage.hit.rule_id };
+  // 策略文本只在这条调用是 SOFT **仅仅**因为策略时进 prompt(spec-m3 §1 第 3 条);后端不做判断
+  const policy =
+    stage.hit.rule_id === "policy.scope" && stage.policy !== null ? { policy: stage.policy, scopeHit: stage.policyHit } : null;
+  const req = { action, context, flaggedRule: stage.hit.rule_id, policy };
   const started = performance.now();
   try {
     const decision = await withDeadline(null, Math.min(backend.timeoutMs, MODEL_TIMEOUT_CAP_MS), (signal) =>

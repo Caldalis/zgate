@@ -13,6 +13,7 @@ import { z } from "zod";
 
 import type { Action } from "./action.ts";
 import type { Context } from "./context.ts";
+import type { Policy } from "../policy.ts";
 
 export const BACKEND_NAMES = ["local", "cloud", "chain"] as const;
 export type BackendName = (typeof BACKEND_NAMES)[number];
@@ -41,11 +42,22 @@ export const ModelDetailsSchema = z.object({
 });
 export type ModelDetails = Readonly<z.infer<typeof ModelDetailsSchema>>;
 
+/** 随请求附上的仓库策略(spec-m3 §4):文本进 system 前缀,命中的 scope 条目进 user JSON。 */
+export interface PolicyAttachment {
+  readonly policy: Policy;
+  readonly scopeHit: readonly string[];
+}
+
 export interface ModelRequest {
   readonly action: Action;
   readonly context: Context;
   /** 规则层命中的 rule_id,进 prompt 的 flagged_rule */
   readonly flaggedRule: string | null;
+  /**
+   * 由管线决定:只在 flaggedRule === "policy.scope"(这条调用是 SOFT 仅仅因为策略)时非 null。
+   * 其余 SOFT 的 prompt 与 M2 逐字节相同,策略文本不在模型输入里(spec-m3 §1 第 3 条)。
+   */
+  readonly policy: PolicyAttachment | null;
 }
 
 export interface ModelDecision {

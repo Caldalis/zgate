@@ -21,7 +21,7 @@ export function request(over: Partial<Action> = {}): ModelRequest {
     env_hints: {},
     elapsed_ms: 0.1,
   };
-  return { action, context, flaggedRule: "fs.outside_cwd" };
+  return { action, context, flaggedRule: "fs.outside_cwd", policy: null };
 }
 
 export interface Seen {

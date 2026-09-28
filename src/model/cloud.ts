@@ -18,7 +18,7 @@ import {
   type ModelRequest,
   type ModelVerdict,
 } from "../core/model.ts";
-import { SYSTEM_PROMPT, chatMessages, parseVerdictJson, userPrompt } from "./prompt.ts";
+import { chatMessages, parseVerdictJson, systemPrompt, userPrompt } from "./prompt.ts";
 
 const DEFAULT_BASE_URL: Record<CloudConfig["provider"], string> = {
   anthropic: "https://api.anthropic.com",
@@ -110,7 +110,7 @@ export class CloudBackend implements ModelBackend {
       {
         model: this.model,
         max_tokens: 64,
-        system: SYSTEM_PROMPT,
+        system: systemPrompt(req),
         messages: [{ role: "user", content: userPrompt(req) }],
         output_config: { format: { type: "json_schema", schema: VERDICT_SCHEMA } },
       },
