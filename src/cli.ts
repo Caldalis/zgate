@@ -21,8 +21,10 @@ import { parseCommand } from "./shell/index.ts";
 import { ActionSchema, type Action } from "./core/action.ts";
 import { configureJournalDir, record, replayFile, flushJournal, journalDir, journalFileFor, shutdownJournal } from "./core/journal.ts";
 import type { ModelBackend } from "./core/model.ts";
-import { decideAction, decideActionAsync } from "./core/pipeline.ts";
+import { decideAction, decideWithContextAsync, type Decided } from "./core/pipeline.ts";
 import { clearCache } from "./core/cache.ts";
+import { gitFacts } from "./enrichers/git.ts";
+import { POLICY_FILENAME, loadPolicy } from "./policy.ts";
 import { ConfigError, configPath, configWarnings, loadConfig, type Config } from "./config.ts";
 import { createBackend } from "./model/index.ts";
 import { loadEvalCases, runEvalCase, summarize as summarizeEval, type EvalCase, type EvalResult } from "./eval.ts";
@@ -37,7 +39,7 @@ const USAGE = `zgate ${VERSION} — 本地 Agent 工具调用决策网关
       模型后端按 ~/.zgate/config.json(或 ZGATE_CONFIG)配置;没有配置文件就只跑规则层。
 
   zgate check <command>... [--cwd DIR] [--json] [--model]
-      判一条命令,打印裁决与理由。不写日志。
+      判一条命令,打印裁决与理由,以及仓库根 .zgatepolicy 的状态。不写日志。
       --model 时规则层判 SOFT 的会按配置文件走一次模型。
       例:zgate check "rm -rf ./build"
 
@@ -47,7 +49,8 @@ const USAGE = `zgate ${VERSION} — 本地 Agent 工具调用决策网关
 
   zgate eval [--cases FILE] [--json]
       拿 tests/eval/cases.yaml(21 条人工标注的 SOFT 样本)跑一遍配置里的模型,
-      打印一致率、该问却放行、误打断与延迟。这是 M2 数字的复现入口。
+      打印一致率、该问却放行、误打断与延迟。这是 M2 数字的复现入口;
+      --cases tests/eval/policy.yaml 是 M3 的 11 条策略用例。
 
   zgate bench [--n N] [--json] [--http]
       跑 N 次混合请求,打印 p50/p95/p99。默认量进程内管线;
@@ -196,19 +199,20 @@ async function cmdCheck(args: Args): Promise<number> {
   }
 
   const actions = actionsFor(command, cwd);
-  const results: { action: Action; decision: Awaited<ReturnType<typeof decideActionAsync>> }[] = [];
+  const results: { action: Action; decided: Decided }[] = [];
   for (const a of actions) {
-    results.push({ action: a, decision: await decideActionAsync(a, { noCache: true, backend }) });
+    results.push({ action: a, decided: await decideWithContextAsync(a, { noCache: true, backend }) });
   }
 
   if (asJson) {
-    process.stdout.write(JSON.stringify(results.map((r) => r.decision), null, 2) + "\n");
+    process.stdout.write(JSON.stringify(results.map((r) => r.decided.decision), null, 2) + "\n");
     return 0;
   }
 
   const parsed = parseCommand(command);
   process.stdout.write(`命令:${command}\n`);
   process.stdout.write(`cwd:${cwd}\n`);
+  process.stdout.write(`策略:${describePolicy(cwd)}\n`);
   if (parsed === null) {
     process.stdout.write("解析:失败(⇒ verb unknown ⇒ §4.2 兜底)\n");
   } else if (parsed.length === 0) {
@@ -222,16 +226,27 @@ async function cmdCheck(args: Args): Promise<number> {
   }
 
   process.stdout.write("\n");
-  for (const { action, decision } of results) {
+  for (const { decided } of results) {
+    const { decision, policy } = decided;
     process.stdout.write(`${decision.verdict.toUpperCase()}`);
     if (decision.reason !== "") process.stdout.write(`  ${decision.reason}`);
     process.stdout.write(`\n  (source=${decision.source}`);
     if (decision.rule_id !== null) process.stdout.write(`, rule=${decision.rule_id}`);
     if (decision.confidence !== null) process.stdout.write(`, confidence=${decision.confidence.toFixed(3)}`);
     process.stdout.write(`, ${decision.latency_ms.toFixed(3)}ms)\n`);
-    void action;
+    if (policy?.scope_hit !== undefined) process.stdout.write(`  命中 scope:${policy.scope_hit.join(", ")}\n`);
   }
   return 0;
+}
+
+/** 一行策略状态(spec-m3 §6:check 打印一行就够,不做 `zgate policy` 子命令)。加载器的警告自己走 stderr。 */
+function describePolicy(cwd: string): string {
+  const root = gitFacts(cwd).root;
+  if (root === null) return `cwd 不在 git 仓库里,不找 ${POLICY_FILENAME}`;
+  const p = loadPolicy(root);
+  if (p === null) return `无(${join(root, POLICY_FILENAME)} 不存在,或是软链接)`;
+  const scope = p.scope.length === 0 ? "没有 scope 条目,策略对裁决不起作用" : `scope ${p.scope.map((s) => s.entry).join(", ")}`;
+  return `${p.path}(${p.bytes} 字节${p.truncated ? ",已截断到 4096" : ""},sha256 ${p.sha256.slice(0, 12)};${scope})`;
 }
 
 // ---------------------------------------------------------------------------
