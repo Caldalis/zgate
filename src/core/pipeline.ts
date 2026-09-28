@@ -96,7 +96,9 @@ function computeStage(action: Action, opts: PipelineOptions, salt: string, start
 
   const context = buildContext(action, opts);
   const post = evaluate(action, context, "post");
-  const hit = post.verdict === "PASS" && pre.verdict !== "PASS" ? pre : post;
+  // 同档 pre 优先(spec-m3 §3.3):两轮同为 SOFT 时以 pre 为 hit。不然 `scope: .` 会把 `git reset --hard`
+  // 标成 policy.scope,策略文本进了本不该进的 prompt。既有用例里两轮同 SOFT 的是 0 条(D15.2)。
+  const hit = pre.verdict === "SOFT" && post.verdict !== "HARD_DENY" ? pre : post;
   if (opts.noCache !== true) setCached(action, hit, context, salt);
 
   return { hit, context, cached: false, model: null, salt, elapsedMs: performance.now() - started };

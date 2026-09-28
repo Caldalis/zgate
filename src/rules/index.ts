@@ -20,6 +20,7 @@ import type { Context } from "../core/context.ts";
 import { FILESYSTEM_RULES } from "./filesystem.ts";
 import { GIT_RULES } from "./git.ts";
 import { NETWORK_RULES } from "./network.ts";
+import { POLICY_RULES } from "./policy.ts";
 import { SECRET_RULES } from "./secrets.ts";
 
 export type RuleVerdict = "HARD_DENY" | "SOFT" | "PASS";
@@ -48,6 +49,8 @@ export const RULES: readonly Rule[] = [
   ...FILESYSTEM_RULES,
   ...SECRET_RULES,
   ...GIT_RULES,
+  // 必须在末尾:同档先命中者胜,policy.scope 只在没有别的 SOFT 时成为 rule_id(spec-m3 §3.3)
+  ...POLICY_RULES,
 ];
 
 /** §4.1 的三档排序:数字越大越严。 */

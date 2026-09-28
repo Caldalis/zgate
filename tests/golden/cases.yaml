@@ -716,3 +716,169 @@
     verb: exec
     rule_verdict: PASS
     verdict: allow
+
+# ── M3:策略即代码(spec-m3 §8.1)────────────────────────────────────────────
+# ★ 这两条是 M3 的核心论点对:同一条命令,仓库里有没有 .zgatepolicy,结论不同。
+# 地位等同第 1 组的软链接对:跑不出这个差异,M3 就不成立。
+
+- id: rm-migrations-without-policy
+  setup:
+    git: { dir: "repo", branch: "main" }
+    write: { "repo/migrations/001_init.sql": "create table users();\n" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "rm -rf ./migrations" }
+  expect:
+    verb: delete
+    rule_verdict: PASS
+    verdict: allow
+
+- id: rm-migrations-with-policy
+  setup:
+    git: { dir: "repo", branch: "main" }
+    write:
+      "repo/migrations/001_init.sql": "create table users();\n"
+      "repo/.zgatepolicy": "不要动 migrations/ 下的任何文件,迁移脚本只能由人手写。\nscope: migrations/\n"
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "rm -rf ./migrations" }
+  expect:
+    verb: delete
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: policy.scope
+
+- id: edit-tool-in-policy-scope
+  setup:
+    git: { dir: "repo", branch: "main" }
+    write:
+      "repo/migrations/001_init.sql": "create table users();\n"
+      "repo/.zgatepolicy": "不要动 migrations/。\nscope: migrations/\n"
+  cwd: "repo"
+  tool: Edit
+  tool_input: { file_path: "migrations/001_init.sql", old_string: "users", new_string: "accounts" }
+  expect:
+    verb: write
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: policy.scope
+
+- id: read-tool-in-policy-scope-passes
+  # 反例:read 不受 scope 约束(spec-m3 §0 第 5 项)
+  setup:
+    git: { dir: "repo", branch: "main" }
+    write:
+      "repo/migrations/001_init.sql": "create table users();\n"
+      "repo/.zgatepolicy": "不要动 migrations/。\nscope: migrations/\n"
+  cwd: "repo"
+  tool: Read
+  tool_input: { file_path: "migrations/001_init.sql" }
+  expect:
+    verb: read
+    rule_verdict: PASS
+    verdict: allow
+
+- id: rm-ancestor-of-policy-scope
+  # 删 scope 的祖先目录就是删它
+  setup:
+    git: { dir: "repo", branch: "main" }
+    write:
+      "repo/src/migrations/001_init.sql": "create table users();\n"
+      "repo/.zgatepolicy": "scope: src/migrations/\n"
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "rm -rf ./src" }
+  expect:
+    verb: delete
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: policy.scope
+
+- id: rm-symlink-alias-into-policy-scope
+  # 软链接别名指进 scope:按 realpath 比,不按 raw
+  setup:
+    git: { dir: "repo", branch: "main" }
+    write:
+      "repo/migrations/001_init.sql": "create table users();\n"
+      "repo/.zgatepolicy": "scope: migrations/\n"
+    symlink: { link: "repo/mig-link", target: "repo/migrations" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "rm -rf ./mig-link" }
+  expect:
+    verb: delete
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: policy.scope
+    resolved_contains: "migrations"
+
+- id: psql-prod-db-policy-text-match
+  # 没有文件目标的命令:靠命令原文的字面片段够到(spec-m3 §0 第 4 项)
+  setup:
+    git: { dir: "repo", branch: "main" }
+    write: { "repo/.zgatepolicy": "别碰线上数据库。\nscope: prod-db.internal\n" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "psql -h prod-db.internal -U app -c 'select count(*) from users'" }
+  expect:
+    verb: network
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: policy.scope
+
+- id: append-to-policy-file
+  # agent 改策略文件:pre policy.self_write 胜过 post policy.scope(scope: . 把它自己也罩住了)
+  setup:
+    git: { dir: "repo", branch: "main" }
+    write: { "repo/.zgatepolicy": "scope: .\n" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "echo 'scope: src/' >> .zgatepolicy" }
+  expect:
+    verb: exec
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: policy.self_write
+
+- id: cat-policy-file
+  # 反例:读策略文件不问
+  setup:
+    git: { dir: "repo", branch: "main" }
+    write: { "repo/.zgatepolicy": "scope: .\n" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "cat .zgatepolicy" }
+  expect:
+    verb: read
+    rule_verdict: PASS
+    verdict: allow
+
+- id: policy-file-is-symlink-ignored
+  # 策略文件是软链接 → 当不存在(恶意仓库可以把它链到 ~/.ssh/id_rsa 让内容进 prompt)
+  setup:
+    git: { dir: "repo", branch: "main" }
+    write:
+      "repo/migrations/001_init.sql": "create table users();\n"
+      "repo/real-policy.txt": "scope: .\n"
+    symlink: { link: "repo/.zgatepolicy", target: "repo/real-policy.txt" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "rm -rf ./migrations" }
+  expect:
+    verb: delete
+    rule_verdict: PASS
+    verdict: allow
+
+- id: rm-root-with-policy-still-denied
+  # 策略只能收紧:HARD_DENY 照旧,pre 轮判死不探测、不看策略
+  setup:
+    git: { dir: "repo", branch: "main" }
+    write: { "repo/.zgatepolicy": "scope: .\n" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "rm -rf /" }
+  expect:
+    verb: delete
+    rule_verdict: HARD_DENY
+    verdict: deny
+    rule_id: fs.rm_root
