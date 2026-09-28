@@ -37,6 +37,18 @@ export const OutcomeSchema = z.object({
 export type Outcome = z.infer<typeof OutcomeSchema>;
 
 /**
+ * 读取端对 model_details 放宽:后端名、错误码、本地裁决是开放集合,老读取端
+ * 遇到新值只能不认识,不能丢整行 —— D14.7 说 v 不升,追加就得对老读者无害(D14.20)。
+ * 写入端仍用 model.ts 里的严格枚举。
+ */
+export const ReplayModelDetailsSchema = ModelDetailsSchema.extend({
+  backend: z.string(),
+  local_verdict: z.string().optional(),
+  error: z.string().optional(),
+});
+export type ReplayedModelDetails = z.infer<typeof ReplayModelDetailsSchema>;
+
+/**
  * 一条完整的决策行。
  *
  * 字段名一路 snake_case —— 这个 schema 是 §16 说的那道缝:左边是 TS,
@@ -61,8 +73,8 @@ export const JournalLineSchema = z.object({
   context: ContextSchema.nullable(),
   decision: DecisionSchema,
   outcome: OutcomeSchema.nullable(),
-  // M2:模型参与过的决策才有。可选字段,v 仍是 1(D14.7)
-  model_details: ModelDetailsSchema.optional(),
+  // M2:模型参与过的决策才有。可选字段,v 仍是 1(D14.7);读取端放宽枚举(D14.20)
+  model_details: ReplayModelDetailsSchema.optional(),
 });
 export type JournalLine = z.infer<typeof JournalLineSchema>;
 
@@ -274,8 +286,8 @@ export interface ReplayedDecision {
   readonly decision: Decision;
   readonly outcome: Outcome | null;
   readonly ts: string;
-  /** 模型参与过才有,否则 null */
-  readonly model_details: ModelDetails | null;
+  /** 模型参与过才有,否则 null。后端名等按读取端的放宽类型 */
+  readonly model_details: ReplayedModelDetails | null;
 }
 
 /**

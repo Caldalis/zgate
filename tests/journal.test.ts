@@ -203,8 +203,25 @@ describe("§9 M2 扩展:model_details(可选字段,v 仍是 1)", () => {
     expect(JournalLineSchema.safeParse(JSON.parse(readAll().trim())).success).toBe(true);
   });
 
-  test("model_details 形状不对 → 这一行算坏行", () => {
-    record(action(), context(), decision({ decision_id: "bad-md" }), new Date(), { backend: "quantum" } as never);
+  test("★ 未知的后端名 / 错误码 / 本地裁决不丢行:老读取端读新日志只是多个不认识的值(D14.20)", () => {
+    record(action(), context(), decision({ decision_id: "new-backend" }), new Date(), { backend: "ollama", error: "quota", local_verdict: "maybe" } as never);
+    flushJournal();
+    const { entries, badLines } = replay(readAll());
+    expect(badLines).toBe(0);
+    expect(entries.length).toBe(1);
+    expect(entries[0]!.model_details).toEqual({ backend: "ollama", error: "quota", local_verdict: "maybe" });
+  });
+
+  test("未知的键也不丢行(zod 对象默认剥掉未知键)", () => {
+    record(action(), context(), decision({ decision_id: "new-key" }), new Date(), { backend: "local", brand_new_field: 42 } as never);
+    flushJournal();
+    const { entries, badLines } = replay(readAll());
+    expect(badLines).toBe(0);
+    expect(entries[0]!.model_details).toEqual({ backend: "local" });
+  });
+
+  test("model_details 结构坏了(backend 不是字符串)→ 这一行仍算坏行,那是升 v 的事", () => {
+    record(action(), context(), decision({ decision_id: "bad-md" }), new Date(), { backend: 42 } as never);
     flushJournal();
     const { entries, badLines } = replay(readAll());
     expect(badLines).toBe(1);
