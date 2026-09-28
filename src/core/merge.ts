@@ -36,10 +36,10 @@ export interface Merged {
  *
  * `model` 为 null 表示"不可用 / 超时 / M1 根本没接"。
  *
- * 注意 HARD_DENY 那一行:`source` 是 `"rule"` 而不是 `"fallback"` ——
- * 因为这条 deny **不是降级的产物**,它就是规则层本来的结论。日志里
- * `source: "fallback"` 应该只在真的降级(SOFT/PASS + 模型不可用)时出现,
- * 否则 M2 之后统计降级率会把这部分算进去,数字就没意义了。
+ * 注意 HARD_DENY 与 PASS 两行:`source` 是 `"rule"` 而不是 `"fallback"` ——
+ * 它们**不是降级的产物**,就是规则层本来的结论(M2 起 PASS 根本不问模型,D14.2)。
+ * 日志里 `source: "fallback"` 只在真的降级(SOFT + 模型不可用或失败)时出现,
+ * 否则统计降级率会把放行这个流量大头算进去,数字就没意义了(D9.5 / D14.18)。
  */
 export function merge(rule: RuleVerdict, model: Verdict | null): Merged {
   switch (rule) {
@@ -54,7 +54,7 @@ export function merge(rule: RuleVerdict, model: Verdict | null): Merged {
 
     case "PASS":
       return model === null
-        ? { verdict: "allow", source: "fallback" }
+        ? { verdict: "allow", source: "rule" }
         : { verdict: model, source: "model" };
   }
 }

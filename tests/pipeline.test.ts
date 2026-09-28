@@ -94,8 +94,8 @@ describe("§3.2 降级表:这是整个项目唯一的安全保证", () => {
     expect(merge("SOFT", "deny")).toEqual({ verdict: "deny", source: "model" });
   });
 
-  test("PASS + 模型不可用 → allow", () => {
-    expect(merge("PASS", null)).toEqual({ verdict: "allow", source: "fallback" });
+  test("PASS + 模型不可用 → allow,source 是 rule:放行是规则层的结论,不是降级(D14.18)", () => {
+    expect(merge("PASS", null)).toEqual({ verdict: "allow", source: "rule" });
   });
 
   test("PASS + 模型可用 → 模型可以推翻(这是 M2 存在的意义)", () => {
@@ -107,7 +107,7 @@ describe("§3.2 降级表:这是整个项目唯一的安全保证", () => {
       ["HARD_DENY", null, "deny", "rule"],
       ["HARD_DENY", "allow", "deny", "rule"],
       ["SOFT", null, "ask", "fallback"],
-      ["PASS", null, "allow", "fallback"],
+      ["PASS", null, "allow", "rule"],
     ] as const;
     for (const [rule, model, verdict, source] of table) {
       expect(merge(rule, model)).toEqual({ verdict, source });
@@ -285,7 +285,7 @@ describe("§5 模型层接口(M2)", () => {
     };
     const d = await decideActionAsync(action("exec", { command: "bun test" }), { backend: spy, noCache: true });
     expect(d.verdict).toBe("allow");
-    expect(d.source).toBe("fallback");
+    expect(d.source).toBe("rule");
     expect(asked).toBe(false);
   });
 
@@ -613,7 +613,7 @@ describe("enrich 排在 rules 之后(§3)", () => {
     });
     const d = decideAction(a);
     expect(d.verdict).toBe("allow");
-    expect(d.source).toBe("fallback"); // 走的是 §3.2 的降级列
+    expect(d.source).toBe("rule"); // PASS 是规则层的结论,不是降级(D14.18)
   });
 });
 
