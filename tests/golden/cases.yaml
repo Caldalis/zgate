@@ -662,3 +662,57 @@
     verb: delete
     rule_verdict: PASS
     verdict: allow
+
+# ── 补:后缀形式的 env 文件(D12.15 第 3 条漏判,D14.23 修)────────────────
+
+- id: read-prod-env-suffix-form
+  setup:
+    git: { dir: "repo", branch: "main" }
+    write: { "repo/prod.env": "DATABASE_URL=postgres://prod\n" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "cat prod.env" }
+  expect:
+    verb: read
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: fs.secret_file
+
+- id: read-prod-env-example-is-template
+  # 反例:模板文件没有真值,后缀式也一样放行
+  setup:
+    git: { dir: "repo", branch: "main" }
+    write: { "repo/prod.env.example": "DATABASE_URL=\n" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "cat prod.env.example" }
+  expect:
+    verb: read
+    rule_verdict: PASS
+    verdict: allow
+
+- id: append-env-via-echo-redirect
+  # verb 是 exec(echo),密钥文件只出现在重定向目的地里,也要问(D14.23)
+  setup:
+    git: { dir: "repo", branch: "main" }
+    write: { "repo/.env": "API_KEY=live\n" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "echo 'FEATURE_FLAG=1' >> .env" }
+  expect:
+    verb: exec
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: fs.secret_file
+
+- id: echo-redirect-to-plain-file
+  # 反例:重定向到普通文件不问
+  setup:
+    git: { dir: "repo", branch: "main" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "echo hello > notes.txt" }
+  expect:
+    verb: exec
+    rule_verdict: PASS
+    verdict: allow

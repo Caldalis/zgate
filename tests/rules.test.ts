@@ -444,7 +444,8 @@ describe("§4.2 未知即 SOFT,绝不 PASS", () => {
 // 危险性质六:**敏感文件名**
 // ===========================================================================
 describe("敏感文件读写", () => {
-  const SECRETS = [".env", ".env.local", "config/.env.production", "server.pem", "key.key", "id_rsa", "id_ed25519"];
+  // 后四条是 D12.15 第 3 条的漏判形状:后缀式 env 文件(D14.23)
+  const SECRETS = [".env", ".env.local", "config/.env.production", "server.pem", "key.key", "id_rsa", "id_ed25519", "prod.env", "staging.env", "deploy/production.env", "envs/dev.env.local"];
   for (const f of SECRETS) {
     test(`读 ${f} → SOFT`, () => {
       const a = toolAct("Read", "read", [{ kind: "file", raw: f }]);
@@ -454,10 +455,18 @@ describe("敏感文件读写", () => {
   }
 
   test("★ 反向断言:读普通文件不打扰", () => {
-    for (const f of ["README.md", "src/main.ts", "package.json", "tsconfig.json", ".env.example"]) {
+    for (const f of ["README.md", "src/main.ts", "package.json", "tsconfig.json", ".env.example", "prod.env.example", "src/environment.ts"]) {
       const a = toolAct("Read", "read", [{ kind: "file", raw: f }]);
       expect(decide(a, ctx({ resources: [facts(f)] })).verdict, f).toBe("PASS");
     }
+  });
+
+  test("★ 重定向写 .env 时 verb 是 exec(echo)也要问;重定向到普通文件不问(D14.23)", () => {
+    const hit = decide(act("exec", { targets: [{ kind: "file", raw: ".env" }], command: "echo 'K=1' >> .env" }), ctx({ resources: [facts(".env")] }));
+    expect(hit.verdict).toBe("SOFT");
+    expect(hit.rule_id).toBe("fs.secret_file");
+    const plain = decide(act("exec", { targets: [{ kind: "file", raw: "notes.txt" }], command: "echo hi > notes.txt" }), ctx({ resources: [facts("notes.txt")] }));
+    expect(plain.verdict).toBe("PASS");
   });
 
   test("id_rsa.pub 是公钥,读它仍属 SOFT 但理由要说清", () => {

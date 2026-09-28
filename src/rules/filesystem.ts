@@ -317,22 +317,27 @@ const symlinkOutOfRepo = defineRule({
  * 所以判据是文件名模式。代价是可能误报(`id_rsa.pub` 是公钥,读它没事),
  * 但那正是 SOFT 而不是 DENY 的理由:问一下,让用户自己决定。
  */
-const SECRET_NAME_RE = /(^|\/)\.env(\.[^/]*)?$|\.pem$|\.key$|(^|\/)id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$|\.p12$|\.pfx$/;
+// env 文件既有点号开头(.env、.env.local)也有后缀形式(prod.env、staging.env),两种都认(D14.23)
+const SECRET_NAME_RE = /(^|\/)[^/]*\.env(\.[^/]*)?$|\.pem$|\.key$|(^|\/)id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$|\.p12$|\.pfx$/;
 
 const secretFile = defineRule({
   id: "fs.secret_file",
   stage: "post",
   verdict: "SOFT",
   match(action: Action): string | null {
-    if (action.verb !== "read" && action.verb !== "write" && action.verb !== "delete") {
-      return null;
-    }
-    for (const t of action.targets) {
-      const p = t.raw.toLowerCase();
+    // read / write / delete 的 targets 就是碰到的文件。其余 verb(`echo K=1 >> .env`
+    // 的 verb 是 exec,D2.5)只看重定向目的地,从原文逐段提取 —— 与 credential_write
+    // 同一套做法(D12.2),漏掉过一次,见 D14.23。
+    const fromTargets = action.verb === "read" || action.verb === "write" || action.verb === "delete";
+    const candidates = fromTargets
+      ? action.targets.map((t) => t.raw)
+      : commandSegments(action).flatMap((seg) => redirectDestinations(seg));
+    for (const raw of candidates) {
+      const p = raw.toLowerCase();
       if (SECRET_NAME_RE.test(p)) {
         // `.env.example` 是给人看的模板,里面没有真值 —— 放行。
         if (/\.env\.(example|sample|template|dist)$/.test(p)) continue;
-        return `涉及密钥文件 ${baseName(t.raw)}`;
+        return `涉及密钥文件 ${baseName(raw)}`;
       }
     }
     return null;
