@@ -105,3 +105,16 @@ export function loadConfig(path = configPath()): Config {
   }
   return parseConfig(text, path);
 }
+
+/** 合法但可疑的配置。启动时打到 stderr,不拒绝(D14.22)。 */
+export function configWarnings(config: Config): string[] {
+  const out: string[] = [];
+  const chain = config.model?.backend === "chain" ? config.model.chain : undefined;
+  if (chain !== undefined && chain.escalation_threshold <= 0.5) {
+    out.push(
+      `chain.escalation_threshold = ${chain.escalation_threshold} 不高于 0.5:本地 P(裁决) 在温度 0 下恒 ≥ 0.5,` +
+        `云端升级永远不会触发,行为等同 backend "local"。要升级请设 0.5 以上(默认 0.75)`,
+    );
+  }
+  return out;
+}

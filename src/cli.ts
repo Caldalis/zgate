@@ -23,7 +23,7 @@ import { configureJournalDir, record, replayFile, flushJournal, journalDir, jour
 import type { ModelBackend } from "./core/model.ts";
 import { decideAction, decideActionAsync } from "./core/pipeline.ts";
 import { clearCache } from "./core/cache.ts";
-import { ConfigError, configPath, loadConfig, type Config } from "./config.ts";
+import { ConfigError, configPath, configWarnings, loadConfig, type Config } from "./config.ts";
 import { createBackend } from "./model/index.ts";
 import { toActions, type HookInput } from "./adapters/claude-code.ts";
 import { createServer, defaultConfig, VERSION } from "./server.ts";
@@ -95,6 +95,7 @@ function flagString(args: Args, name: string, fallback: string): string {
 function loadBackend(): { config: Config; backend: ModelBackend | null } | null {
   try {
     const config = loadConfig();
+    for (const w of configWarnings(config)) process.stderr.write(`配置警告:${w}\n`);
     return { config, backend: createBackend(config.model) };
   } catch (err) {
     if (err instanceof ConfigError) {

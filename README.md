@@ -87,7 +87,7 @@ zgate 只发 HTTP,不启动、不管理 llama-server。请求走 `/v1/chat/compl
              "escalation_threshold": 0.75 } } }
 ```
 
-本地的 P(裁决) 低于 `escalation_threshold` 就再问云端,云端答案是终局。温度 0 下 P(裁决) 不会低于 0.5,所以阈值 ≤ 0.5 等于关掉升级;本地不可达也会升级,云端失败降级为 `ask`,不回退本地答案。两段的 `timeout_ms` 之和不能超过 5000(hook 的总超时),超了 `zgate serve` 拒绝启动,否则本地超时后云端拿不到自己那份预算。
+本地的 P(裁决) 低于 `escalation_threshold` 就再问云端,云端答案是终局。温度 0 下 P(裁决) 不会低于 0.5,所以阈值 ≤ 0.5 等于关掉升级(`zgate serve` 启动时会打印警告);本地不可达也会升级,云端失败降级为 `ask`,不回退本地答案。两段的 `timeout_ms` 之和不能超过 5000(hook 的总超时),超了 `zgate serve` 拒绝启动,否则本地超时后云端拿不到自己那份预算。
 
 **降级**:模型超时、不可达、4xx、输出异常,一律回到规则层的结论(`SOFT` → `ask`),`source` 为 `fallback`,理由里带括号说明原因。`timeout_ms` 按后端配(本地 9B 级 2000、1B 级 200、云端 3000),上限 5000(Claude Code hook 的超时)。
 

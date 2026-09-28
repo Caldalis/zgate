@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { ConfigError, ConfigSchema, configPath, loadConfig, parseConfig } from "../src/config.ts";
+import { ConfigError, ConfigSchema, configPath, configWarnings, loadConfig, parseConfig } from "../src/config.ts";
 import { ChainBackend, CloudBackend, LocalBackend, createBackend } from "../src/model/index.ts";
 
 const dirs: string[] = [];
@@ -136,5 +136,23 @@ describe("createBackend 工厂", () => {
 
   test("★ cloud 的环境变量缺失 → ConfigError(启动即失败,不是运行时静默降级)", () => {
     expect(() => createBackend({ backend: "cloud", cloud: { provider: "anthropic", api_key_env: "NOPE", model: "m", timeout_ms: 3000 } }, {})).toThrow(ConfigError);
+  });
+});
+
+describe("配置警告:合法但可疑,只提示不拒绝(D14.22)", () => {
+  const base = { local: { base_url: "http://x", timeout_ms: 1000 }, cloud: { provider: "openai", api_key_env: "K", model: "m", timeout_ms: 1000 } };
+  const chainWith = (t?: number) => parseConfig(JSON.stringify({ model: { backend: "chain", chain: t === undefined ? base : { ...base, escalation_threshold: t } } }));
+
+  test("★ chain 阈值 ≤ 0.5 → 一条警告,说明升级永不触发;照抄旧 SPEC 示例的 0.4 会被提示", () => {
+    expect(configWarnings(chainWith(0.4))).toHaveLength(1);
+    expect(configWarnings(chainWith(0.4))[0]).toMatch(/0\.5/);
+    expect(configWarnings(chainWith(0.5))).toHaveLength(1);
+  });
+
+  test("默认 0.75、显式 0.6、非 chain 后端、空配置都没有警告", () => {
+    expect(configWarnings(chainWith())).toEqual([]);
+    expect(configWarnings(chainWith(0.6))).toEqual([]);
+    expect(configWarnings(parseConfig(JSON.stringify({ model: { backend: "local", local: { base_url: "http://x", timeout_ms: 1000 } } })))).toEqual([]);
+    expect(configWarnings(parseConfig("{}"))).toEqual([]);
   });
 });
