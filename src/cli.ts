@@ -13,7 +13,7 @@
 // 参数解析手写,不用库:§1 说依赖只允许 zod,而这里需要的东西
 // (`argv.slice(2)` + 几个 `--key value`)不值一个依赖。
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -25,6 +25,7 @@ import { decideAction, decideActionAsync } from "./core/pipeline.ts";
 import { clearCache } from "./core/cache.ts";
 import { ConfigError, configPath, configWarnings, loadConfig, type Config } from "./config.ts";
 import { createBackend } from "./model/index.ts";
+import { loadEvalCases, runEvalCase, summarize as summarizeEval, type EvalCase, type EvalResult } from "./eval.ts";
 import { toActions, type HookInput } from "./adapters/claude-code.ts";
 import { createServer, defaultConfig, VERSION } from "./server.ts";
 
@@ -43,6 +44,10 @@ const USAGE = `zgate ${VERSION} — 本地 Agent 工具调用决策网关
   zgate journal replay <file>
       把一天的 JSONL 还原成 {action, context, decision, outcome} 数组。
       不给文件名时用今天的。这是 M2 评测与 M4 训练数据的唯一入口。
+
+  zgate eval [--cases FILE] [--json]
+      拿 tests/eval/cases.yaml(21 条人工标注的 SOFT 样本)跑一遍配置里的模型,
+      打印一致率、该问却放行、误打断与延迟。这是 M2 数字的复现入口。
 
   zgate bench [--n N] [--json] [--http]
       跑 N 次混合请求,打印 p50/p95/p99。默认量进程内管线;
@@ -416,6 +421,74 @@ function cmdBench(args: Args): number | Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
+// eval
+// ---------------------------------------------------------------------------
+
+/** 默认用例集随源码走;编译成单文件时用 --cases 指定。 */
+const DEFAULT_EVAL_CASES = new URL("../tests/eval/cases.yaml", import.meta.url).pathname;
+
+async function cmdEval(args: Args): Promise<number> {
+  const file = flagString(args, "cases", DEFAULT_EVAL_CASES);
+  const asJson = args.flags.get("json") === true;
+  let cases: EvalCase[];
+  try {
+    cases = loadEvalCases(readFileSync(file, "utf8"));
+  } catch (err) {
+    process.stderr.write(`读不了用例文件 ${file}:${(err as Error).message}\n`);
+    return 2;
+  }
+  const loaded = loadBackend();
+  if (loaded === null) return 1;
+  const backend = loaded.backend;
+  if (backend === null) {
+    process.stderr.write(`配置文件 ${configPath()} 没配 model,只跑规则层:所有 SOFT 都是 ask,只能检查用例是否都是 SOFT\n`);
+  }
+
+  // 固定目录:同一台机器上两次运行的 prompt 逐字相同,数字才可复现
+  const scratch = join(tmpdir(), "zgate-eval");
+  rmSync(scratch, { recursive: true, force: true });
+  try {
+    // 预热一次不计入:llama-server 刚起或换 slot 时首次调用常超时(D14.13)
+    const first = cases[0];
+    if (backend !== null && first !== undefined) await runEvalCase(first, backend, scratch);
+    const results: EvalResult[] = [];
+    for (const c of cases) results.push(await runEvalCase(c, backend, scratch));
+    const summary = summarizeEval(results);
+
+    if (asJson) {
+      process.stdout.write(JSON.stringify({ backend: describeBackend(backend), cases: file, results, summary }, null, 2) + "\n");
+      return 0;
+    }
+    process.stdout.write(`zgate eval  backend=${describeBackend(backend)}  用例=${file}  n=${cases.length}\n`);
+    if (backend !== null) process.stdout.write("(先预热 1 次,不计入)\n");
+    process.stdout.write("\n");
+    process.stdout.write(`${"id".padEnd(36)} ${"标签".padEnd(6)} ${"规则".padEnd(10)} ${"结论".padEnd(6)} ${"P(裁决)".padEnd(8)} ${"延迟".padStart(8)}  判定\n`);
+    for (const r of results) {
+      const mark =
+        r.rule_verdict !== "SOFT" ? "非 SOFT,模型没参与"
+        : r.error !== undefined ? `降级(${r.error})`
+        : r.verdict === r.label ? "✓"
+        : r.label === "ask" ? "✗ 该问却放行"
+        : "✗ 误打断";
+      const conf = r.confidence === null ? "-" : r.confidence.toFixed(3);
+      process.stdout.write(
+        `${r.id.padEnd(36)} ${r.label.padEnd(6)} ${r.rule_verdict.padEnd(10)} ${r.verdict.padEnd(6)} ${conf.padEnd(8)} ${`${r.latency_ms.toFixed(0)}ms`.padStart(8)}  ${mark}\n`,
+      );
+    }
+    const p = (x: number | null): string => (x === null ? "-" : `${x.toFixed(0)}ms`);
+    process.stdout.write("\n");
+    process.stdout.write(
+      `一致 ${summary.agree}/${summary.soft}   该问却放行 ${summary.missed}/${summary.missed_of}   误打断 ${summary.over_asked}/${summary.over_asked_of}` +
+        `   降级 ${summary.degraded}   延迟 p50 ${p(summary.p50_ms)} p95 ${p(summary.p95_ms)}\n`,
+    );
+    if (summary.non_soft.length > 0) process.stdout.write(`非 SOFT 用例(规则直接定性,模型没参与):${summary.non_soft.join(", ")}\n`);
+    return 0;
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 入口
 // ---------------------------------------------------------------------------
 
@@ -452,6 +525,8 @@ export function main(argv: readonly string[]): number | Promise<number> {
     }
     case "bench":
       return cmdBench(args);
+    case "eval":
+      return cmdEval(args);
     default:
       process.stderr.write(`未知命令:${cmd}\n\n`);
       process.stdout.write(USAGE);

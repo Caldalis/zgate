@@ -91,7 +91,7 @@ zgate 只发 HTTP,不启动、不管理 llama-server。请求走 `/v1/chat/compl
 
 **降级**:模型超时、不可达、4xx、输出异常,一律回到规则层的结论(`SOFT` → `ask`),`source` 为 `fallback`,理由里带括号说明原因。`timeout_ms` 按后端配(本地 9B 级 2000、1B 级 200、云端 3000),上限 5000(Claude Code hook 的超时)。
 
-不起 daemon 也能试:`zgate check "cat .env" --model` 会按配置文件走一次模型,打印裁决、置信度与耗时。
+不起 daemon 也能试:`zgate check "cat .env" --model` 会按配置文件走一次模型,打印裁决、置信度与耗时。`zgate eval` 则把 21 条人工标注的 `SOFT` 样本整批跑一遍,数字见"已知限制"。
 
 ## 一分钟验证
 
@@ -123,6 +123,7 @@ zgate check "rm -rf ./build"                           # ASK  目标软链接指
 | `zgate check <command> [--cwd DIR] [--json] [--model]` | 判一条 Bash 命令,打印裁决与理由,不写日志。`--model` 时 `SOFT` 按配置文件走模型 |
 | `zgate journal replay [file]` | 把一天的 JSONL 还原成 `{action, context, decision, outcome}` 数组。评测与训练数据的唯一入口 |
 | `zgate bench [--n N] [--http] [--json]` | 跑 N 次混合请求打印 p50/p95/p99。`--http` 起真 daemon 量端到端 |
+| `zgate eval [--cases FILE] [--json]` | 拿 `tests/eval/cases.yaml`(21 条人工标注的 `SOFT` 样本)跑配置里的模型,打印一致率、该问却放行、误打断与延迟。模型数字的复现入口 |
 
 HTTP 端点(§8):`POST /hook/claude-code`、`POST /decide`(收 `{action}` 返回 Decision,供其他适配器)、`POST /outcome`(记录用户实际选择)、`GET /healthz`。
 
@@ -141,7 +142,7 @@ HTTP 端点(§8):`POST /hook/claude-code`、`POST /decide`(收 `{action}` 返回
 **SOFT**
 
 - 删除 / 写入目标解析后落在 cwd 之外,或目标是指向仓库外的软链接
-- 读 / 写 `.env*`、`*.pem`、`*.key`、`id_rsa*` 等敏感文件
+- 读 / 写 `.env*`、`*.env`(如 `prod.env`)、`*.pem`、`*.key`、`id_rsa*` 等敏感文件;`.env.example` 这类模板不算
 - `$(…)`、反引号、`eval`、未知工具、解析失败
 - 命令含 `prod` / `production` 且是写或删
 - `git reset --hard`、`git clean -f`、`--no-verify`、强推但分支或默认分支未知、下载后执行
@@ -177,7 +178,7 @@ HTTP 端点(§8):`POST /hook/claude-code`、`POST /decide`(收 `{action}` 返回
 - 删除一个**不存在**的目标不问(空操作,无害);写一个不存在的目标会按它将被创建的位置判,落在 cwd 外会问。
 - 规则结论缓存 60 秒。同一 cwd、同一命令在这个窗口内环境变了(比如目录换成软链接)不会重新探测;换链接这个动作本身会先经过网关并留下日志。
 - 不展开 shell 变量,不读 `bash script.sh` 的脚本内容。`~` 和 `$HOME` 只在敏感目录规则里按字面认,越界判断不展开它们。
-- 不配模型时所有 `SOFT` 都变成 `ask`。配了本地 9B,21 条真实 `SOFT` 样本上 16 条与人工判断一致,0 条该问却放行,5 条多问了一次(兄弟包的 `dist`、仓库内叫 `production` 的目录)。
+- 不配模型时所有 `SOFT` 都变成 `ask`。配了本地 9B,`zgate eval` 的 21 条人工标注 `SOFT` 样本上 16 条与人工判断一致,0 条该问却放行,5 条多问了一次(`.env.test`、兄弟包的 `dist`、仓库内叫 `production` 的模板目录、`id_rsa.pub`、feature 分支上的强推)。冷调用 p50 约 1.1 秒;同一 prompt 命中 llama-server 缓存时约 0.25 秒。
 - 模型的 prompt 是零样本、固定的,`.zgatepolicy` 策略文件是 M3 的事。
 - 配置文件是严格 JSON,不支持注释;改了要重启 daemon。
 
@@ -203,3 +204,4 @@ bun run typecheck   # tsc --noEmit,strict
 - `~/.zgate/config.json` 配置文件,启动时读一次,parse 失败拒绝启动
 - JSONL journal 与 `journal replay`;`/outcome` 补丁行;模型参与的行带 `model_details` 与 `confidence`
 - `zgate check` 一键验证(`--model` 走真实模型),`zgate bench` 进程内与 HTTP 端到端两种模式
+- `zgate eval`:21 条人工标注的 `SOFT` 样本集(`tests/eval/cases.yaml`,与 golden 同一套环境描述)整批过模型,输出一致率、该问却放行、误打断与延迟

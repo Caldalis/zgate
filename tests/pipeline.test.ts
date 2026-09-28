@@ -19,6 +19,7 @@ import { decideAction, decideActionAsync, decideAll, decideAllAsync, decideWithC
 import { ModelHttpError } from "../src/core/model.ts";
 import { toActions } from "../src/adapters/claude-code.ts";
 import { clearGitCache, clearCwdCache } from "../src/enrichers/index.ts";
+import { materialize, type CaseSetup } from "../src/eval.ts";
 import type { ModelBackend, ModelDecision, ModelRequest, ModelVerdict } from "../src/core/model.ts";
 
 let root: string;
@@ -797,23 +798,10 @@ describe("★ 审计修订的两条真实漏判,走适配器的生产路径", ()
 // (D13.2 预告的那次改动)。golden 走同步入口,不问模型:它测的是规则层与解析层,
 // 模型层有自己的 mock 测试。
 
-interface GoldenGit {
-  readonly dir: string;
-  readonly branch: string;
-  readonly default_branch?: string;
-}
-interface GoldenSymlink {
-  readonly link: string;
-  readonly target: string;
-}
 interface GoldenCase {
   readonly id: string;
-  readonly setup?: {
-    readonly mkdir?: readonly string[];
-    readonly write?: Readonly<Record<string, string>>;
-    readonly symlink?: GoldenSymlink | readonly GoldenSymlink[];
-    readonly git?: GoldenGit | readonly GoldenGit[];
-  };
+  /** 与 zgate eval 的用例同一套 setup,搭环境的代码在 src/eval.ts 的 materialize */
+  readonly setup?: CaseSetup;
   readonly cwd?: string;
   readonly tool: string;
   readonly tool_input: Readonly<Record<string, unknown>>;
@@ -832,10 +820,6 @@ const GOLDEN: readonly GoldenCase[] = Bun.YAML.parse(
   readFileSync(new URL("./golden/cases.yaml", import.meta.url), "utf8"),
 ) as GoldenCase[];
 
-function asList<T>(x: T | readonly T[] | undefined): readonly T[] {
-  if (x === undefined) return [];
-  return Array.isArray(x) ? (x as readonly T[]) : [x as T];
-}
 
 describe("§12 golden(tests/golden/cases.yaml)", () => {
   test("用例文件:非空、id 唯一、每条覆盖 §12 要求的字段", () => {
@@ -859,22 +843,7 @@ describe("§12 golden(tests/golden/cases.yaml)", () => {
   for (const c of GOLDEN) {
     test(c.id, () => {
       const base = realpathSync(mkdtempSync(join(root, "golden-")));
-      for (const d of c.setup?.mkdir ?? []) mkdirSync(join(base, d), { recursive: true });
-      for (const [p, content] of Object.entries(c.setup?.write ?? {})) {
-        mkdirSync(join(base, p, ".."), { recursive: true });
-        writeFileSync(join(base, p), content);
-      }
-      for (const g of asList(c.setup?.git)) {
-        mkdirSync(join(base, g.dir, ".git", "refs", "remotes", "origin"), { recursive: true });
-        writeFileSync(join(base, g.dir, ".git", "HEAD"), `ref: refs/heads/${g.branch}\n`);
-        if (g.default_branch !== undefined) {
-          writeFileSync(
-            join(base, g.dir, ".git", "refs", "remotes", "origin", "HEAD"),
-            `ref: refs/remotes/origin/${g.default_branch}\n`,
-          );
-        }
-      }
-      for (const s of asList(c.setup?.symlink)) symlinkSync(join(base, s.target), join(base, s.link));
+      materialize(base, c.setup);
       clearGitCache();
       clearCwdCache();
 
