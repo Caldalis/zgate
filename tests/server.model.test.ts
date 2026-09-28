@@ -148,6 +148,15 @@ describe("模型段接进 daemon", () => {
     expect(recs.map((r) => r["decision"]["source"]).sort()).toEqual(["fallback", "model"]);
   });
 
+  test("★ 复合语句里逐字相同的两段:模型只问一次,两行都是 model,decision_id 不同(D14.19)", async () => {
+    const out = await hook("Bash", { command: "cat .env && cat .env" });
+    expect(out.permissionDecision).toBe("allow");
+    expect(backend.asked.length).toBe(1);
+    const recs = lastLines(2);
+    expect(recs.map((r) => r["decision"]["source"])).toEqual(["model", "model"]);
+    expect(new Set(recs.map((r) => r["decision"]["decision_id"])).size).toBe(2);
+  });
+
   test("★ 模型结论进缓存:同一 SOFT 第二次 source=cache,模型只问一次", async () => {
     await hook("Read", { file_path: ".env" });
     const out = await hook("Read", { file_path: ".env" });

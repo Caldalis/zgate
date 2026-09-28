@@ -145,6 +145,9 @@ export function setCachedModel(action: Action, salt: string, model: ModelDecisio
   if (e !== undefined) store.set(key, { ...e, model });
 }
 
+/** 批内识别逐字相同的段用同一把 key(D14.19)。 */
+export const stageKey = keyOf;
+
 /** 测试 / 维护命令用。 */
 export function clearCache(): void {
   store.clear();

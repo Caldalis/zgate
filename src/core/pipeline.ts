@@ -11,7 +11,7 @@
 import type { Action } from "./action.ts";
 import type { Context } from "./context.ts";
 import type { Decision } from "./decision.ts";
-import { getCached, setCached, setCachedModel } from "./cache.ts";
+import { getCached, setCached, setCachedModel, stageKey } from "./cache.ts";
 import { merge, mergeAll, strictest, type Merged } from "./merge.ts";
 import {
   MODEL_TIMEOUT_CAP_MS,
@@ -59,14 +59,27 @@ function buildContext(action: Action, opts: PipelineOptions): Context {
   return { resources: e.resources, repo: e.repo, env_hints: e.env_hints, elapsed_ms: e.elapsed_ms };
 }
 
+/** 一批之内逐字相同的段(复合语句的两个 exec 段)共用一份规则段结论,key 与缓存同一把。 */
+type Batch = Map<string, RuleStage>;
+
 /**
  * 跑规则段:cache ──▶ rules(pre) ──▶ enrich ──▶ rules(post)。
  * `salt` 是分支名,查缓存之前就要知道(git 探针自带 3 秒缓存,成本接近零)。
+ * 传了 `batch` 时,批内重复的段直接复用先前那条,不查缓存也不重算(D14.19)。
  */
-function runRules(action: Action, opts: PipelineOptions): RuleStage {
+function runRules(action: Action, opts: PipelineOptions, batch?: Batch): RuleStage {
   const started = performance.now();
   const salt = opts.noCache === true ? "" : (gitFacts(action.cwd).branch ?? "");
+  const key = stageKey(action, salt);
+  const dup = batch?.get(key);
+  if (dup !== undefined) return dup;
 
+  const stage = computeStage(action, opts, salt, started);
+  batch?.set(key, stage);
+  return stage;
+}
+
+function computeStage(action: Action, opts: PipelineOptions, salt: string, started: number): RuleStage {
   if (opts.noCache !== true) {
     const cached = getCached(action, salt);
     if (cached !== null) {
@@ -259,11 +272,26 @@ function combine(perAction: readonly BatchItem[], newId: () => string): BatchRes
   return { decision, winningIndex: index, perAction };
 }
 
+/** 批内重复的段复用先前那条的结论,只换 decision_id;它没花时间,latency 记 0(D14.19)。 */
+function reissue(prior: Decided, newId: () => string): Decided {
+  return { ...prior, decision: { ...prior.decision, decision_id: newId(), latency_ms: 0 } };
+}
+
 /** 同步判一批:只有规则段。 */
 export function decideAll(actions: readonly Action[], opts: PipelineOptions = {}): BatchResult {
   const newId = opts.newId ?? defaultNewId;
   if (actions.length === 0) return emptyBatch(newId);
-  return combine(actions.map((action) => ({ action, ...decideWithContext(action, opts) })), newId);
+  const batch: Batch = new Map();
+  const done = new Map<RuleStage, Decided>();
+  const perAction = actions.map((action) => {
+    const stage = runRules(action, opts, batch);
+    const prior = done.get(stage);
+    if (prior !== undefined) return { action, ...reissue(prior, newId) };
+    const decided = assemble(stage, { kind: "none" }, 0, newId);
+    done.set(stage, decided);
+    return { action, ...decided };
+  });
+  return combine(perAction, newId);
 }
 
 /**
@@ -271,16 +299,21 @@ export function decideAll(actions: readonly Action[], opts: PipelineOptions = {}
  * 先把每条的规则段都跑完:有一条 HARD_DENY 整批就是 deny,谁都不问模型。
  * 然后按序问模型;一旦某条落到 ask,整批已经是 ask,后面的 SOFT 不再问
  * (省的是几百毫秒,不是钱),它们按 §3.2 右列记 ask。
+ * 批内逐字相同的段只算一次、只问一次模型(D14.19)。
  */
 export async function decideAllAsync(actions: readonly Action[], opts: PipelineOptions = {}): Promise<BatchResult> {
   const newId = opts.newId ?? defaultNewId;
   if (actions.length === 0) return emptyBatch(newId);
 
-  const stages = actions.map((action) => ({ action, stage: runRules(action, opts) }));
+  const batch: Batch = new Map();
+  const stages = actions.map((action) => ({ action, stage: runRules(action, opts, batch) }));
   let consult = !stages.some((s) => s.stage.hit.verdict === "HARD_DENY");
   const perAction: BatchItem[] = [];
+  const done = new Map<RuleStage, Decided>();
   for (const { action, stage } of stages) {
-    const decided = await finishStage(action, stage, opts, consult);
+    const prior = done.get(stage);
+    const decided = prior === undefined ? await finishStage(action, stage, opts, consult) : reissue(prior, newId);
+    if (prior === undefined) done.set(stage, decided);
     if (decided.decision.verdict !== "allow") consult = false;
     perAction.push({ action, ...decided });
   }

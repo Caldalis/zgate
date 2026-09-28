@@ -15,7 +15,7 @@ import type { Action, Verb } from "../src/core/action.ts";
 import type { Decision } from "../src/core/decision.ts";
 import { clearCache, cacheSize, getCached, setCached } from "../src/core/cache.ts";
 import { merge, mergeAll, strictest } from "../src/core/merge.ts";
-import { decideAction, decideActionAsync, decideAll, decideWithContext, decideWithContextAsync } from "../src/core/pipeline.ts";
+import { decideAction, decideActionAsync, decideAll, decideAllAsync, decideWithContext, decideWithContextAsync } from "../src/core/pipeline.ts";
 import { ModelHttpError } from "../src/core/model.ts";
 import { toActions } from "../src/adapters/claude-code.ts";
 import { clearGitCache, clearCwdCache } from "../src/enrichers/index.ts";
@@ -962,5 +962,54 @@ describe("★ D12.11 越界写不存在的目标(真实 fs,走适配器)", () =>
   test("★ 反向:读一个不存在的外部文件 → allow", () => {
     const { repo, outside } = mkRepo("d1211-read");
     expect(tool("Read", { file_path: join(outside, "nope") }, repo).verdict).toBe("allow");
+  });
+});
+
+// ===========================================================================
+describe("★ 复合语句里逐字相同的段:批内复用,不撞缓存、不重复问模型(D14.19)", () => {
+  // 适配器给每个 exec 段填的 command 都是整条原文,所以两段 Action 逐字相同(D14.15 第 5 条)
+  const cmd = "sudo systemctl stop nginx && sudo systemctl start nginx";
+
+  test("同步批:两段相同的 PASS 首次请求都是 rule 而不是 cache,decision_id 不同,缓存只占一条", () => {
+    const r = decideAll([action("exec", { command: cmd }), action("exec", { command: cmd })]);
+    expect(r.decision.verdict).toBe("allow");
+    expect(r.perAction.map((p) => p.decision.source)).toEqual(["rule", "rule"]);
+    expect(r.perAction[0]!.decision.decision_id).not.toBe(r.perAction[1]!.decision.decision_id);
+    expect(r.perAction[1]!.decision.latency_ms).toBe(0);
+    expect(cacheSize()).toBe(1);
+  });
+
+  test("第二次请求才是 cache,两段都是", () => {
+    decideAll([action("exec", { command: cmd }), action("exec", { command: cmd })]);
+    const r = decideAll([action("exec", { command: cmd }), action("exec", { command: cmd })]);
+    expect(r.perAction.map((p) => p.decision.source)).toEqual(["cache", "cache"]);
+  });
+
+  test("★ 异步批:两段相同的 SOFT 只问模型一次,两行都是 model", async () => {
+    let calls = 0;
+    const counting: ModelBackend = {
+      name: "local",
+      timeoutMs: 200,
+      async classify(): Promise<ModelDecision> {
+        calls += 1;
+        return { verdict: "allow", confidence: 0.9, latency_ms: 1, details: { backend: "local" } };
+      },
+    };
+    const soft = () => action("unknown", { command: "$(x) && $(x)" });
+    const r = await decideAllAsync([soft(), soft()], { backend: counting });
+    expect(calls).toBe(1);
+    expect(r.decision.verdict).toBe("allow");
+    expect(r.perAction.map((p) => p.decision.source)).toEqual(["model", "model"]);
+    expect(r.perAction.map((p) => p.decision.confidence)).toEqual([0.9, 0.9]);
+    expect(new Set(r.perAction.map((p) => p.decision.decision_id)).size).toBe(2);
+  });
+
+  test("不同的段互不影响:各自一条缓存", () => {
+    const r = decideAll([
+      action("write", { command: "mkdir x && rm -rf x", targets: [{ kind: "file", raw: "x" }] }),
+      action("delete", { command: "mkdir x && rm -rf x", targets: [{ kind: "file", raw: "x" }] }),
+    ]);
+    expect(r.perAction.length).toBe(2);
+    expect(cacheSize()).toBe(2);
   });
 });
