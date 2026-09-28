@@ -20,6 +20,7 @@
 // 也就是 §3.2 说的"最坏情况不低于纯规则 baseline"。
 
 import { ActionSchema, type Action } from "./core/action.ts";
+import type { Decision } from "./core/decision.ts";
 import { OutcomeSchema, record, recordOutcome, startJournal, shutdownJournal, journalStats, type Outcome } from "./core/journal.ts";
 import type { ModelBackend } from "./core/model.ts";
 import { decideAllAsync, type PipelineOptions } from "./core/pipeline.ts";
@@ -83,6 +84,14 @@ function neutralResponse(reason: string): HookResponse {
   };
 }
 
+/** `/decide` 版的不表态:一个 verdict 为 ask 的 Decision,不记日志(D14.21)。 */
+function neutralDecision(reason: string): Decision {
+  return {
+    verdict: "ask", reason, source: "fallback", rule_id: null,
+    confidence: null, latency_ms: 0, decision_id: crypto.randomUUID(),
+  };
+}
+
 /**
  * §8 的 `/decide`:收一个 Action,返回 Decision。
  *
@@ -108,12 +117,17 @@ async function handleDecide(req: Request, opts: PipelineOptions): Promise<Respon
   }
 
   const action = parsed.data as Action;
-  const result = await decideAllAsync([action], opts);
-  // 记整体决策(它的 decision_id 就是回给调用方的那个,/outcome 靠它对上),
-  // Context 与 model_details 取自这唯一一条 Action 的判定。
-  const only = result.perAction[0];
-  record(action, only?.context ?? null, result.decision, new Date(), only?.modelDetails ?? null);
-  return json(result.decision);
+  try {
+    const result = await decideAllAsync([action], opts);
+    // 记整体决策(它的 decision_id 就是回给调用方的那个,/outcome 靠它对上),
+    // Context 与 model_details 取自这唯一一条 Action 的判定。
+    const only = result.perAction[0];
+    record(action, only?.context ?? null, result.decision, new Date(), only?.modelDetails ?? null);
+    return json(result.decision);
+  } catch {
+    // 与 /hook 同一条规矩(D10.1):网关自己出错时回 ask,不把降级方向外包给调用方
+    return json(neutralDecision("网关内部错误"));
+  }
 }
 
 /**

@@ -198,3 +198,37 @@ describe("模型段接进 daemon", () => {
     expect(rec?.["model_details"]["backend"]).toBe("local");
   });
 });
+
+describe("/decide 的兜底(D14.21):管线内部抛出时回 ask,不是 500", () => {
+  test("★ 让 finishStage 的 catch 块自己炸(classify 失败后读 backend.name)→ 200 + ask/fallback", async () => {
+    const poison = {
+      get name(): "local" {
+        throw new Error("boom");
+      },
+      timeoutMs: 100,
+      async classify(): Promise<ModelDecision> {
+        throw new Error("down");
+      },
+    } as ModelBackend;
+    const srv = createServer(defaultConfig({ port: 0, backend: poison }));
+    try {
+      const action = {
+        verb: "read", targets: [{ kind: "file", raw: ".env" }], command: null, tool_name: "Read",
+        tool_input: { file_path: ".env" }, agent: { name: "t", version: null, session_id: null }, cwd: repo, turn_id: "t-500",
+      };
+      const res = await fetch(`http://127.0.0.1:${srv.port}/decide`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      expect(res.status).toBe(200);
+      const d = (await res.json()) as Record<string, unknown>;
+      expect(d["verdict"]).toBe("ask");
+      expect(d["source"]).toBe("fallback");
+      expect(d["reason"]).toBe("网关内部错误");
+      expect(d["confidence"]).toBeNull();
+    } finally {
+      void srv.stop(true);
+    }
+  });
+});
