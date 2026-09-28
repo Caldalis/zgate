@@ -93,6 +93,8 @@ export interface EvalResult {
   readonly id: string;
   readonly label: EvalLabel;
   readonly rule_verdict: RuleVerdict;
+  /** 规则段命中的规则;策略集靠它确认 policy.scope 真的是 rule_id(不然策略文本没进 prompt) */
+  readonly rule_id: string | null;
   readonly verdict: Verdict;
   readonly source: string;
   readonly confidence: number | null;
@@ -125,6 +127,7 @@ export async function runEvalCase(c: EvalCase, backend: ModelBackend | null, scr
     id: c.id,
     label: c.label,
     rule_verdict: win?.ruleVerdict ?? "PASS",
+    rule_id: r.decision.rule_id,
     verdict: r.decision.verdict,
     source: r.decision.source,
     confidence: r.decision.confidence,

@@ -8,6 +8,7 @@ import type { ModelBackend, ModelDecision } from "../src/core/model.ts";
 import { loadEvalCases, runEvalCase, summarize, withRoot, type EvalCase, type EvalResult } from "../src/eval.ts";
 
 const CASES: readonly EvalCase[] = loadEvalCases(readFileSync(new URL("./eval/cases.yaml", import.meta.url), "utf8"));
+const POLICY_CASES: readonly EvalCase[] = loadEvalCases(readFileSync(new URL("./eval/policy.yaml", import.meta.url), "utf8"));
 const scratch = mkdtempSync(join(tmpdir(), "zgate-eval-test-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
@@ -38,6 +39,40 @@ describe("用例集(tests/eval/cases.yaml)", () => {
       expect(r.rule_verdict, r.id).toBe("SOFT");
       expect(r.verdict, r.id).toBe("ask");
       expect(r.source, r.id).toBe("fallback");
+    }
+  });
+});
+
+describe("策略用例集(tests/eval/policy.yaml,spec-m3 §8.2)", () => {
+  test("8 条该问、3 条该放行,id 唯一且不与 cases.yaml 重名,每条有 why 且写了 .zgatepolicy", () => {
+    expect(POLICY_CASES.filter((c) => c.label === "ask").length).toBe(8);
+    expect(POLICY_CASES.filter((c) => c.label === "allow").length).toBe(3);
+    const ids = new Set(POLICY_CASES.map((c) => c.id));
+    expect(ids.size).toBe(POLICY_CASES.length);
+    for (const c of CASES) expect(ids.has(c.id), c.id).toBe(false);
+    for (const c of POLICY_CASES) {
+      expect(typeof c.why, c.id).toBe("string");
+      expect(Object.keys(c.setup?.write ?? {}).some((p) => p.endsWith("/.zgatepolicy")), c.id).toBe(true);
+    }
+  });
+
+  test("★ 每条在当前规则下是 SOFT,且除 self-write 外 rule_id 都是 policy.scope:不然策略文本根本没进 prompt", async () => {
+    for (const c of POLICY_CASES) {
+      const r = await runEvalCase(c, null, scratch);
+      expect(r.rule_verdict, c.id).toBe("SOFT");
+      expect(r.verdict, c.id).toBe("ask");
+      expect(r.rule_id, c.id).toBe(c.id === "policy-self-write" ? "policy.self_write" : "policy.scope");
+    }
+  });
+
+  test("★ 同一条命令去掉策略文件后全是 PASS:这 11 条今天模型一条都看不到,策略是它们进模型的唯一原因", async () => {
+    for (const c of POLICY_CASES) {
+      if (c.id === "policy-self-write") continue; // 改策略文件本身与策略在不在场无关,pre 轮就问
+      const write = Object.fromEntries(Object.entries(c.setup?.write ?? {}).filter(([p]) => !p.endsWith("/.zgatepolicy")));
+      const stripped: EvalCase = { ...c, id: `${c.id}--no-policy`, setup: { ...c.setup, write } };
+      const r = await runEvalCase(stripped, null, scratch);
+      expect(r.rule_verdict, c.id).toBe("PASS");
+      expect(r.verdict, c.id).toBe("allow");
     }
   });
 });
@@ -79,9 +114,9 @@ describe("评测器算术", () => {
 
   test("非 SOFT 的结果不进计数,只列 id", () => {
     const s = summarize([
-      { id: "a", label: "ask", rule_verdict: "HARD_DENY", verdict: "deny", source: "rule", confidence: null, latency_ms: 0.1 },
-      { id: "b", label: "allow", rule_verdict: "PASS", verdict: "allow", source: "rule", confidence: null, latency_ms: 0.1 },
-      { id: "c", label: "ask", rule_verdict: "SOFT", verdict: "ask", source: "model", confidence: 0.9, latency_ms: 500 },
+      { id: "a", label: "ask", rule_verdict: "HARD_DENY", rule_id: "fs.rm_root", verdict: "deny", source: "rule", confidence: null, latency_ms: 0.1 },
+      { id: "b", label: "allow", rule_verdict: "PASS", rule_id: null, verdict: "allow", source: "rule", confidence: null, latency_ms: 0.1 },
+      { id: "c", label: "ask", rule_verdict: "SOFT", rule_id: "fs.secret_file", verdict: "ask", source: "model", confidence: 0.9, latency_ms: 500 },
     ]);
     expect(s.soft).toBe(1);
     expect(s.non_soft).toEqual(["a", "b"]);
