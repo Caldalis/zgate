@@ -43,8 +43,9 @@ export class ChainBackend implements ModelBackend {
     }
 
     const localMs = performance.now() - started;
+    // 两段之和不超过 5000 由配置保证(D14.17),剩下的就是云端自己那份预算
     const remaining = Math.min(this.cloud.timeoutMs, this.timeoutMs - localMs);
-    const cloud = await withDeadline(signal, Math.max(1, remaining), (s) => this.cloud.classify(req, s));
+    const cloud = await withDeadline(signal, remaining, (s) => this.cloud.classify(req, s));
     return {
       verdict: cloud.verdict,
       confidence: null,

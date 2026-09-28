@@ -108,9 +108,24 @@ describe("失败路径", () => {
     expect(performance.now() - t0).toBeLessThan(1000);
   });
 
-  test("chain 的总预算是 local+cloud,封顶 5000", () => {
+  test("chain 的总预算是 local+cloud(两段之和超过 5000 的配置在 schema 就被拒,见 config.test)", () => {
     expect(chain("http://x", "http://y", 0.75, 2000, 3000).timeoutMs).toBe(5000);
     expect(chain("http://x", "http://y", 0.75, 200, 1000).timeoutMs).toBe(1200);
-    expect(chain("http://x", "http://y", 0.75, 4000, 4000).timeoutMs).toBe(5000);
+  });
+
+  test("★ 本地耗满自己的预算后,云端仍拿到配置里的完整预算,不是被挤剩的零头", async () => {
+    const local = track(mockServer(never));
+    let arrived = 0;
+    const cloud = track(
+      mockServer(() => {
+        arrived = performance.now();
+        return never();
+      }),
+    );
+    const b = chain(local.url, cloud.url, 0.75, 200, 400);
+    const t0 = performance.now();
+    await expect(withDeadline(null, b.timeoutMs, (s) => b.classify(request(), s))).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(arrived).toBeGreaterThan(t0);
+    expect(performance.now() - arrived).toBeGreaterThan(350);
   });
 });

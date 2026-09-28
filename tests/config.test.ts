@@ -50,6 +50,16 @@ describe("§5.3 schema", () => {
     expect(ConfigSchema.safeParse(mk(5000)).success).toBe(true);
   });
 
+  test("★ chain 的 local + cloud 超时之和不能超过 5000(否则云端拿不到自己的预算,D14.17)", () => {
+    const mk = (l: number, c: number) => ({
+      model: { backend: "chain", chain: { local: { base_url: "http://x", timeout_ms: l }, cloud: { provider: "openai", api_key_env: "K", model: "m", timeout_ms: c } } },
+    });
+    expect(ConfigSchema.safeParse(mk(2000, 3000)).success).toBe(true);
+    expect(ConfigSchema.safeParse(mk(4000, 3000)).success).toBe(false);
+    expect(ConfigSchema.safeParse(mk(5000, 100)).success).toBe(false);
+    expect(() => parseConfig(JSON.stringify(mk(4000, 3000)))).toThrow(/5000/);
+  });
+
   test("★ backend 指向的字段必须存在", () => {
     expect(ConfigSchema.safeParse({ model: { backend: "cloud" } }).success).toBe(false);
     expect(ConfigSchema.safeParse({ model: { backend: "local", cloud: { provider: "openai", api_key_env: "K", model: "m", timeout_ms: 1000 } } }).success).toBe(false);

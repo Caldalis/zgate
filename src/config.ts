@@ -9,7 +9,7 @@ import { join } from "node:path";
 
 import { z } from "zod";
 
-import { BACKEND_NAMES } from "./core/model.ts";
+import { BACKEND_NAMES, MODEL_TIMEOUT_CAP_MS } from "./core/model.ts";
 
 const TimeoutSchema = z.number().min(100).max(5000);
 
@@ -29,12 +29,24 @@ export const CloudConfigSchema = z.object({
 });
 export type CloudConfig = z.infer<typeof CloudConfigSchema>;
 
-export const ChainConfigSchema = z.object({
-  local: LocalConfigSchema,
-  cloud: CloudConfigSchema,
-  // P(verdict) < 阈值就升级云端。温度 0 下 P(verdict) ≥ 0.5,所以 ≤ 0.5 等于关掉升级
-  escalation_threshold: z.number().min(0).max(1).default(0.75),
-});
+export const ChainConfigSchema = z
+  .object({
+    local: LocalConfigSchema,
+    cloud: CloudConfigSchema,
+    // P(verdict) < 阈值就升级云端。温度 0 下 P(verdict) ≥ 0.5,所以 ≤ 0.5 等于关掉升级
+    escalation_threshold: z.number().min(0).max(1).default(0.75),
+  })
+  .superRefine((c, ctx) => {
+    // chain 的总预算是两段之和且封顶 5000;超了云端就拿不到自己那份(D14.17)
+    const sum = c.local.timeout_ms + c.cloud.timeout_ms;
+    if (sum > MODEL_TIMEOUT_CAP_MS) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["cloud", "timeout_ms"],
+        message: `local.timeout_ms + cloud.timeout_ms = ${sum},超过 ${MODEL_TIMEOUT_CAP_MS}(hook 总超时),云端拿不到配置里写的预算`,
+      });
+    }
+  });
 export type ChainConfig = z.infer<typeof ChainConfigSchema>;
 
 export const ModelConfigSchema = z
