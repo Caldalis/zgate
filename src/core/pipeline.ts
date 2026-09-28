@@ -25,7 +25,7 @@ import {
 } from "./model.ts";
 import { enrich } from "../enrichers/index.ts";
 import { gitFacts } from "../enrichers/git.ts";
-import { loadPolicy, type Policy } from "../policy.ts";
+import { loadPolicy, policyDetails, type Policy, type PolicyDetails } from "../policy.ts";
 import { evaluate, type RuleHit, type RuleVerdict } from "../rules/index.ts";
 import { scopeHits } from "../rules/policy.ts";
 
@@ -142,6 +142,8 @@ export interface Decided {
   readonly ruleVerdict: RuleVerdict;
   /** 模型参与时才有,进 journal 的 model_details */
   readonly modelDetails: ModelDetails | null;
+  /** 策略在场(post 轮跑过且加载到了)时才有,进 journal 的 policy;pre 判死为 null */
+  readonly policy: PolicyDetails | null;
 }
 
 /** 用规则段 + 模型段组装 Decision。不经 zod。 */
@@ -149,6 +151,7 @@ function assemble(stage: RuleStage, outcome: ModelOutcome, modelMs: number, newI
   const { hit } = stage;
   const latency = stage.elapsedMs + modelMs;
   const base = { rule_id: hit.rule_id, latency_ms: latency, decision_id: newId() };
+  const policy = stage.policy === null ? null : policyDetails(stage.policy, stage.policyHit);
 
   if (hit.verdict === "SOFT" && outcome.kind === "decision") {
     const m = outcome.decision;
@@ -163,6 +166,7 @@ function assemble(stage: RuleStage, outcome: ModelOutcome, modelMs: number, newI
       context: stage.context,
       ruleVerdict: hit.verdict,
       modelDetails: m.details,
+      policy,
     };
   }
 
@@ -174,6 +178,7 @@ function assemble(stage: RuleStage, outcome: ModelOutcome, modelMs: number, newI
       context: stage.context,
       ruleVerdict: hit.verdict,
       modelDetails: outcome.details,
+      policy,
     };
   }
 
@@ -189,6 +194,7 @@ function assemble(stage: RuleStage, outcome: ModelOutcome, modelMs: number, newI
     context: stage.context,
     ruleVerdict: hit.verdict,
     modelDetails: null,
+    policy,
   };
 }
 

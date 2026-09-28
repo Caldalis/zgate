@@ -8,6 +8,8 @@
 import { closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
+import { z } from "zod";
+
 export const POLICY_FILENAME = ".zgatepolicy";
 export const MAX_POLICY_BYTES = 4096;
 /** 与 git 探针一致(§6)。 */
@@ -32,6 +34,29 @@ export interface Policy {
   readonly bytes: number;
   readonly truncated: boolean;
   readonly warnings: readonly string[];
+}
+
+/**
+ * journal 顶层的可选 `policy`(§9 的可选扩展,spec-m3 §5,与 D14.7 同一做法):策略在场时写,不管最后是 PASS 还是 SOFT。
+ * 策略文本不进日志:sha256 足以对回仓库里那个版本。字段 snake_case。
+ */
+export const PolicyDetailsSchema = z.object({
+  path: z.string(),
+  sha256: z.string(),
+  bytes: z.number(),
+  truncated: z.literal(true).optional(),
+  scope_hit: z.array(z.string()).optional(),
+});
+export type PolicyDetails = Readonly<z.infer<typeof PolicyDetailsSchema>>;
+
+export function policyDetails(policy: Policy, scopeHit: readonly string[]): PolicyDetails {
+  return {
+    path: policy.path,
+    sha256: policy.sha256,
+    bytes: policy.bytes,
+    ...(policy.truncated ? { truncated: true } : {}),
+    ...(scopeHit.length > 0 ? { scope_hit: [...scopeHit] } : {}),
+  };
 }
 
 /** `scope:` 顶格(允许前导空白)、小写;`Scope:` 或行中间的 `scope:` 只是文字。 */

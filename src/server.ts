@@ -122,7 +122,7 @@ async function handleDecide(req: Request, opts: PipelineOptions): Promise<Respon
     // 记整体决策(它的 decision_id 就是回给调用方的那个,/outcome 靠它对上),
     // Context 与 model_details 取自这唯一一条 Action 的判定。
     const only = result.perAction[0];
-    record(action, only?.context ?? null, result.decision, new Date(), only?.modelDetails ?? null);
+    record(action, only?.context ?? null, result.decision, new Date(), only?.modelDetails ?? null, only?.policy ?? null);
     return json(result.decision);
   } catch {
     // 与 /hook 同一条规矩(D10.1):网关自己出错时回 ask,不把降级方向外包给调用方
@@ -173,8 +173,8 @@ async function handleHook(req: Request, opts: PipelineOptions): Promise<Response
     // §9:每条 Action 各记一行,带上判它时看到的 Context 与 model_details。
     // 整体结论不单独记:它没有自己的 Action,hook 响应也带不回 decision_id。见 D11.2。
     const now = new Date();
-    for (const { action, context, decision, modelDetails } of result.perAction) {
-      record(action, context, decision, now, modelDetails);
+    for (const { action, context, decision, modelDetails, policy } of result.perAction) {
+      record(action, context, decision, now, modelDetails, policy);
     }
     return json(toHookResponse(result.decision));
   } catch {

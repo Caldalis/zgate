@@ -26,6 +26,7 @@ import { ContextSchema, type Context } from "./context.ts";
 import { DecisionSchema, type Decision } from "./decision.ts";
 import { ModelDetailsSchema, type ModelDetails } from "./model.ts";
 import type { AgentInfo } from "./action.ts";
+import { PolicyDetailsSchema, type PolicyDetails } from "../policy.ts";
 
 /** §9:`"v": 1` 必须存在。读取端按版本分支。 */
 export const JOURNAL_VERSION = 1;
@@ -47,6 +48,12 @@ export const ReplayModelDetailsSchema = ModelDetailsSchema.extend({
   error: z.string().optional(),
 });
 export type ReplayedModelDetails = z.infer<typeof ReplayModelDetailsSchema>;
+
+/** 读取端对 policy 同样放宽(D14.20 的思路):truncated 收任意布尔,未知键由 zod 剥掉。 */
+export const ReplayPolicySchema = PolicyDetailsSchema.extend({
+  truncated: z.boolean().optional(),
+});
+export type ReplayedPolicy = z.infer<typeof ReplayPolicySchema>;
 
 /**
  * 一条完整的决策行。
@@ -75,6 +82,8 @@ export const JournalLineSchema = z.object({
   outcome: OutcomeSchema.nullable(),
   // M2:模型参与过的决策才有。可选字段,v 仍是 1(D14.7);读取端放宽枚举(D14.20)
   model_details: ReplayModelDetailsSchema.optional(),
+  // M3:仓库策略在场的决策才有(不管 PASS 还是 SOFT)。同一做法,v 仍是 1(spec-m3 §5,D15.4)
+  policy: ReplayPolicySchema.optional(),
 });
 export type JournalLine = z.infer<typeof JournalLineSchema>;
 
@@ -236,6 +245,7 @@ export function record(
   decision: Decision,
   now = new Date(),
   modelDetails: ModelDetails | null = null,
+  policy: PolicyDetails | null = null,
 ): void {
   enqueue(
     {
@@ -249,6 +259,7 @@ export function record(
       decision,
       outcome: null,
       ...(modelDetails === null ? {} : { model_details: modelDetails }),
+      ...(policy === null ? {} : { policy }),
     },
     now,
   );
@@ -288,6 +299,8 @@ export interface ReplayedDecision {
   readonly ts: string;
   /** 模型参与过才有,否则 null。后端名等按读取端的放宽类型 */
   readonly model_details: ReplayedModelDetails | null;
+  /** 仓库策略在场才有,否则 null */
+  readonly policy: ReplayedPolicy | null;
 }
 
 /**
@@ -343,6 +356,7 @@ export function replay(text: string): { entries: ReplayedDecision[]; badLines: n
       outcome: d.outcome,
       ts: d.ts,
       model_details: d.model_details ?? null,
+      policy: d.policy ?? null,
     });
     order.push(d.decision_id);
   }

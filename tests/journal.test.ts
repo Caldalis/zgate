@@ -493,3 +493,57 @@ describe("§9 常量与导出", () => {
     expect(readAll().trim().split("\n").length).toBe(3);
   });
 });
+
+describe("§9 M3 扩展:policy(可选字段,v 仍是 1,spec-m3 §5 / D15.4)", () => {
+  const details = { path: "/repo/.zgatepolicy", sha256: "ab".repeat(32), bytes: 818, scope_hit: ["migrations"] };
+
+  test("不传 policy 时行里没有这个键", () => {
+    record(action(), context(), decision());
+    flushJournal();
+    const obj = JSON.parse(readAll().trim());
+    expect("policy" in obj).toBe(false);
+  });
+
+  test("传了就原样落盘,能过 schema;策略文本不进日志,只有 sha", () => {
+    record(action(), context(), decision({ decision_id: "with-policy" }), new Date(), null, details);
+    flushJournal();
+    const obj = JSON.parse(readAll().trim());
+    expect(obj["policy"]).toEqual(details);
+    expect(obj["v"]).toBe(1);
+    expect(JSON.stringify(obj)).not.toContain("scope:");
+    expect(JournalLineSchema.safeParse(obj).success).toBe(true);
+  });
+
+  test("truncated 与 scope_hit 只在有值时出现;PASS 的行也可以带 policy(策略在场但没命中)", () => {
+    record(action(), context(), decision({ verdict: "allow", source: "rule", rule_id: null, reason: "" }), new Date(), null, { path: "/repo/.zgatepolicy", sha256: "x", bytes: 10 });
+    flushJournal();
+    const obj = JSON.parse(readAll().trim());
+    expect(obj["policy"]).toEqual({ path: "/repo/.zgatepolicy", sha256: "x", bytes: 10 });
+  });
+
+  test("replay 把 policy 带回;没有策略的行是 null", () => {
+    record(action(), context(), decision({ decision_id: "p1" }), new Date(), null, details);
+    record(action(), context(), decision({ decision_id: "p2" }));
+    flushJournal();
+    const { entries, badLines } = replay(readAll());
+    expect(badLines).toBe(0);
+    expect(entries[0]!.policy).toEqual(details);
+    expect(entries[1]!.policy).toBeNull();
+  });
+
+  test("M2 写出的行(没有 policy)仍过 schema;policy 里的未知键不丢行", () => {
+    record(action(), context(), decision({ decision_id: "new-key" }), new Date(), null, { ...details, brand_new: 1 } as never);
+    flushJournal();
+    const { entries, badLines } = replay(readAll());
+    expect(badLines).toBe(0);
+    expect(entries[0]!.policy).toEqual(details);
+  });
+
+  test("policy 结构坏了(sha256 不是字符串)→ 坏行,那是升 v 的事", () => {
+    record(action(), context(), decision({ decision_id: "bad-policy" }), new Date(), null, { path: "/p", sha256: 42, bytes: 1 } as never);
+    flushJournal();
+    const { entries, badLines } = replay(readAll());
+    expect(badLines).toBe(1);
+    expect(entries.length).toBe(0);
+  });
+});
