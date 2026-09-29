@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Local agent tool-call decision gateway",
+  "license": "MIT",
   "bin": {
     "zgate": "./src/cli.ts"
   },

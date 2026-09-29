@@ -253,6 +253,15 @@ Claude Code 不回传用户在确认框里点了什么,但工具**真的执行�
 
 环境变量只采集 `CI`、`GIT_DIR`、`VIRTUAL_ENV` 的存在性和 `TERM_PROGRAM`,其余一律不进日志。
 
+## 隐私与数据
+
+zgate 不上传任何东西:没有遥测、没有账号、没有云端上报,daemon 只绑 `127.0.0.1`。数据只在两个地方流动,都由你控制:
+
+- **本机日志。** `~/.zgate/journal/` 里每一行是一次工具调用的**完整输入**(`tool_input` 原样保留):Bash 的整条命令行、Read / Edit / Write 的路径与内容、WebFetch 的 URL,加上探针看到的真实路径、软链接目标、git 分支,以及 agent 给的 `session_id` / `tool_use_id` / `prompt_id`。命令里若带 token(`curl -H "Authorization: Bearer …"`)、Write 的内容若含密钥,都会原样落盘。文件权限随你的 umask;要共享日志或拿它做训练数据之前,自己脱敏。`.zgatepolicy` 的原文不进日志,只记 sha256;环境变量只采集 `CI`、`GIT_DIR`、`VIRTUAL_ENV` 的存在性与 `TERM_PROGRAM`。
+- **模型后端。** 只有规则层判 `SOFT` 的调用会送给模型,送的是:命令行(非 Bash 工具为空)、工具名、cwd、目标路径、探针事实(真实路径、是否软链接、是否在 cwd 与仓库内)、git 分支、命中的规则名,以及 `.zgatepolicy` 的原文(仅当策略是"问"的理由时)。Edit / Write 的内容不发给模型。配本地 llama-server 时这些不出本机;配 `cloud` 或 `chain` 时会发到你指定的 API(Anthropic、OpenAI 兼容服务或你的代理),按对方的条款处理。密钥只以环境变量**名**写进配置,zgate 不落盘密钥。
+
+同一台机器上的任何本地进程都能访问 daemon(loopback 没有鉴权):能拿到裁决,也能往 journal 追加 `/outcome` 补丁。这与 Claude Code、opencode 自己的本地服务是同一个信任模型。
+
 ## 性能
 
 `zgate bench --n 2000`,cwd 为本仓库,Apple M5(规则路径,不含模型):
@@ -285,7 +294,7 @@ bun test            # 1202 个测试,含 tests/golden/cases.yaml 的 83 条 gold
 bun run typecheck   # tsc --noEmit,strict
 ```
 
-依赖只有 `zod`。设计规格(SPEC.md)与实现决策记录(DECISIONS.md)是本地文档,不在仓库里。
+依赖只有 `zod`。CI(`.github/workflows/ci.yml`)在 ubuntu 与 macos 上用 Bun 1.3.14 跑 `bun install --frozen-lockfile`、`typecheck`、`bun test` 与 `bench --n 500`;bench 不达 §13 预算(p50 < 5ms、p99 < 30ms)即失败。设计规格(SPEC.md)与实现决策记录(DECISIONS.md)是本地文档,不在仓库里。
 
 ## 特性列表
 
@@ -310,3 +319,7 @@ bun run typecheck   # tsc --noEmit,strict
 - journal 可选的 `hook` 字段(`tool_use_id`、`permission_mode`、`prompt_id`);内存悬着表(按 session × tool_use_id,TTL 30 分钟、上限一万);`zgate serve` 打印五段 settings 片段
 - `zgate journal stats`:按 `rule_id × source` 数问了多少、多少被点通过、多少 unknown、多少没结果
 - opencode 适配器:`POST /hook/opencode` + 随仓库分发的进程内插件 `plugins/opencode/zgate.ts`,deny 在执行前抛错、allow 替用户回 once、ask 交给 opencode 自己的确认框;用户的回答与工具执行完成回写 outcome(`rejected` / `approved` / `unknown`);bash 的 `workdir`、`apply_patch` 的逐文件目标都认
+
+## 许可
+
+MIT,见 [LICENSE](LICENSE)。
