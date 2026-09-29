@@ -227,7 +227,7 @@ HTTP 端点(§8):`POST /hook/claude-code`、`POST /decide`(收 `{action}` 返回
 ## 开发
 
 ```sh
-bun test            # 924 个测试,含 tests/golden/cases.yaml 的 68 条 golden 用例;模型层用 mock server,不需要真实模型
+bun test            # 932 个测试,含 tests/golden/cases.yaml 的 68 条 golden 用例;模型层用 mock server,不需要真实模型
 bun run typecheck   # tsc --noEmit,strict
 ```
 
