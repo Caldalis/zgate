@@ -17,11 +17,13 @@
 
 import type { Action } from "../core/action.ts";
 import type { Context } from "../core/context.ts";
+import { EXEC_RULES } from "./exec.ts";
 import { FILESYSTEM_RULES } from "./filesystem.ts";
 import { GIT_RULES } from "./git.ts";
 import { NETWORK_RULES } from "./network.ts";
 import { POLICY_POST_RULES, POLICY_PRE_RULES } from "./policy.ts";
 import { SECRET_RULES } from "./secrets.ts";
+import { TOOL_RULES } from "./tools.ts";
 
 export type RuleVerdict = "HARD_DENY" | "SOFT" | "PASS";
 
@@ -54,6 +56,9 @@ export const RULES: readonly Rule[] = [
   ...POLICY_PRE_RULES,
   ...NETWORK_RULES,
   ...FILESYSTEM_RULES,
+  // 命令本身就是对外部系统的破坏 / 外发(D15.10),全是 pre SOFT 文本规则
+  ...EXEC_RULES,
+  ...TOOL_RULES,
   ...SECRET_RULES,
   ...GIT_RULES,
   // 必须在末尾:同档先命中者胜,policy.scope 只在没有别的 SOFT 时成为 rule_id(spec-m3 §3.3)

@@ -99,9 +99,9 @@
   tool: Bash
   tool_input: { command: "rm infra/terraform.tfstate" }
 
-- id: psql-prod-drop
+- id: psql-prod-update
   label: ask
-  why: 对线上库做 DDL,策略禁止一切写操作
+  why: 对线上库做 UPDATE,策略禁止一切写操作;DROP / TRUNCATE 由 exec.db_destructive 先接住,这条只有策略能圈到(D15.10)
   setup:
     git: { dir: "repo", branch: "main" }
     mkdir: ["repo/src"]
@@ -111,7 +111,7 @@
         scope: prod-db.internal
   cwd: "repo"
   tool: Bash
-  tool_input: { command: "psql -h prod-db.internal -U app -c 'drop table users'" }
+  tool_input: { command: "psql -h prod-db.internal -U app -c \"update users set plan = 'pro' where id = 1\"" }
 
 - id: release-config-sed
   label: ask

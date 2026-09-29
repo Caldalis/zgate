@@ -12,7 +12,7 @@ import type { Context } from "../core/context.ts";
 import { defineRule } from "./index.ts";
 import type { Rule } from "./index.ts";
 import { baseName, hasSegment, normalize, redirectDestinations, underHome } from "./match.ts";
-import { commandLine, commandSegments } from "./cmdline.ts";
+import { commandLine, commandSegments, operandsOf, simpleCommandHead, simpleCommands } from "./cmdline.ts";
 
 /**
  * 「整个文件系统的根」的所有写法。
@@ -230,6 +230,41 @@ const deviceDestroy = defineRule({
     // 单纯的 `ls /dev/sda` 不能算 —— 只有写类命令才算
     if (/\bdd\b|\bmkfs|\bfdisk|\bparted|\bwipefs|\bshred\b|\bblkdiscard\b/.test(text)) {
       return "写入磁盘设备节点";
+    }
+    return null;
+  },
+});
+
+/**
+ * 删 / 写目标里有未展开的变量或 `~`。解析层不展开变量(D2.4),探针把 `$DIR` 当成 cwd 里的字面路径,
+ * `inside_cwd` 恒 true,于是 `rm -rf $DIR`、`rm -rf ~/Library/x`、`echo x > $OUT` 一律 PASS —— 那是 fail-open(D15.10)。
+ * §4.2:目标解析不出来一律 SOFT。`~` / `$HOME` 本身归 fs.rm_root,`~/.ssh` 归 fs.credential_write,它们是 HARD_DENY,先赢。
+ */
+const unresolvedTarget = defineRule({
+  id: "fs.unresolved_target",
+  stage: "pre",
+  verdict: "SOFT",
+  match(action: Action): string | null {
+    const candidates = action.verb === "write" || action.verb === "delete" ? action.targets.map((t) => t.raw) : [];
+    for (const seg of commandSegments(action)) candidates.push(...redirectDestinations(seg));
+    for (const raw of candidates) {
+      if (raw.includes("$") || raw.startsWith("~")) return "目标含未展开的变量或 ~";
+    }
+    return null;
+  },
+});
+
+/** rm 的目标不在命令行上(`xargs rm -rf < list.txt`、`… | xargs rm`):看不见要删什么。 */
+const RM_FAMILY = new Set(["rm", "rmdir", "shred", "unlink"]);
+
+const rmOperandHidden = defineRule({
+  id: "fs.rm_operand_hidden",
+  stage: "pre",
+  verdict: "SOFT",
+  match(action: Action): string | null {
+    for (const seg of simpleCommands(action)) {
+      const c = simpleCommandHead(seg);
+      if (c !== null && RM_FAMILY.has(c.head) && operandsOf(c.args).length === 0) return "删除目标不在命令行上";
     }
     return null;
   },
@@ -466,6 +501,8 @@ export const FILESYSTEM_RULES: readonly Rule[] = [
   noPreserveRoot,
   credentialWrite,
   deviceDestroy,
+  unresolvedTarget,
+  rmOperandHidden,
   // post
   unknownAction,
   escapesCwd,

@@ -287,6 +287,19 @@ const destructiveGit = defineRule({
       if (g.sub === "branch" && /(^|\s)-D(\s|$)/.test(g.rest)) {
         return "强制删除本地分支";
       }
+      // 下面四条是 D15.10 补的:stash 里的改动、reflog 与不可达对象、引用,丢了都找不回来
+      if (g.sub === "stash" && /(^|\s)(drop|clear)(\s|$)/.test(g.rest)) {
+        return "丢弃 stash 里的改动";
+      }
+      if (g.sub === "reflog" && /(^|\s)(expire|delete)(\s|$)/.test(g.rest)) {
+        return "清理 reflog";
+      }
+      if (g.sub === "gc" && /(^|\s)--prune(=|\s|$)/.test(g.rest)) {
+        return "gc --prune 清理不可达对象";
+      }
+      if (g.sub === "update-ref" && /(^|\s)-d(\s|$)/.test(g.rest)) {
+        return "删除 git 引用";
+      }
     }
     return null;
   },

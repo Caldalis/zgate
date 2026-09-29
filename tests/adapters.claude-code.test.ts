@@ -68,11 +68,14 @@ describe("§10 工具名 → verb 映射", () => {
     expect(verbs).toEqual(["read", "delete", "network"]);
   });
 
-  test("表外的工具 → unknown,不瞎猜", () => {
-    for (const tool of ["Task", "TodoWrite", "ExitPlanMode", "SomeFutureTool"]) {
+  test("表外的工具 → unknown,不瞎猜;没有可判动作的内部工具跳过(D15.10)", () => {
+    for (const tool of ["SomeFutureTool", "mcp__github__delete_repo", "PowerShell"]) {
       const acts = toActions(hook({ tool_name: tool, tool_input: {} }), TURN);
-      // Task 特判成空;其余落 unknown 各一条
-      for (const a of acts) expect(a.verb).toBe("unknown");
+      expect(acts, tool).toHaveLength(1);
+      expect(acts[0]?.verb, tool).toBe("unknown");
+    }
+    for (const tool of ["Task", "Agent", "TodoWrite", "ExitPlanMode", "Skill", "AskUserQuestion"]) {
+      expect(toActions(hook({ tool_name: tool, tool_input: {} }), TURN), tool).toHaveLength(0);
     }
   });
 });
@@ -265,7 +268,7 @@ describe("§2.1 command 字段", () => {
   });
 
   test("非 Bash 工具的 command 恒为 null", () => {
-    for (const tool of ["Read", "Edit", "WebSearch", "TodoWrite"]) {
+    for (const tool of ["Read", "Edit", "WebSearch"]) {
       expect(one({ tool_name: tool, tool_input: { file_path: "/x" } }).command, tool).toBeNull();
     }
   });

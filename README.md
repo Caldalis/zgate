@@ -50,6 +50,8 @@ bun build --compile src/cli.ts --outfile zgate
 
 hook 超时或 daemon 没起时,Claude Code 走它自己原本的权限流程,不会因为 zgate 不在而卡住。zgate 自己内部出错时回 `ask`,同样是"没装网关时的行为"。
 
+`matcher: ""` 让每个工具都过网关。文件与 shell 类工具(Bash、Monitor、Read、Glob、Grep、Edit、MultiEdit、Write、NotebookEdit、WebFetch、WebSearch)按各自的动词判;没有可判动作的内部工具(Agent / Task、TodoWrite、Skill、AskUserQuestion、ExitPlanMode、EnterPlanMode、KillShell、BashOutput、SendMessage 等)直接放行、不进日志;MCP 工具(`mcp__<server>__<tool>`)语义不透明,一律 `ask`(配了模型由模型判),理由里写清是哪个 server;完全不认识的工具名也 `ask`。如果你的 settings 里定义了 `allowedHttpHookUrls`,要把 zgate 的 URL 加进去。
+
 ## 接模型(可选)
 
 规则层判 `HARD_DENY` 与 `PASS` 的直接返回,只有 `SOFT` 才走模型;模型只在 `allow` / `ask` 之间选,永远推不翻 `HARD_DENY`。配置写在 `~/.zgate/config.json`(可用 `ZGATE_CONFIG` 指向别处),只在 `zgate serve` 启动时读一次;文件不存在就只跑规则层。
@@ -185,7 +187,10 @@ HTTP 端点(§8):`POST /hook/claude-code`、`POST /decide`(收 `{action}` 返回
 - 读 / 写 `.env*`、`*.env`(如 `prod.env`)、`*.pem`、`*.key`、`id_rsa*` 等敏感文件;`.env.example` 这类模板不算
 - `$(…)`、反引号、`eval`、未知工具、解析失败
 - 命令含 `prod` / `production` 且是写或删
-- `git reset --hard`、`git clean -f`、`--no-verify`、强推但分支或默认分支未知、下载后执行
+- `git reset --hard`、`git clean -f`、`git stash drop` / `clear`、`reflog expire`、`gc --prune`、`--no-verify`、强推但分支或默认分支未知、下载后执行
+- 命令本身就是对外部系统的破坏或外发,文件系统探测不到:数据库 CLI 里的 `drop` / `truncate` / `delete from` 与 `heroku pg:reset` 这类重置命令;`terraform destroy`、`kubectl delete`、`docker system prune`、`aws s3 rm`、`gcloud … delete`、`gh repo delete`;`npm publish`、`docker push`、`vercel --prod`、`kubectl apply`、`terraform apply`;`ssh host 'rm -rf …'`、`rsync --delete`、`scp .env host:`;`crontab -r`、`kill -9 -1`、`shutdown`、`launchctl bootout`;`printenv` 整份导出或 `echo $SOME_TOKEN`
+- 删 / 写目标含未展开的变量或 `~`(`rm -rf $DIR`、`rm -rf ~/x`、`echo x > $OUT`):解析层不展开变量,看不出它指哪里;`rm` 的目标来自 stdin(`xargs rm -rf < list.txt`)
+- MCP 工具调用;完全不认识的工具名
 - 非 `read` 的调用触及 `.zgatepolicy` 的 `scope` 条目(目标在条目内、是条目的祖先、或命令原文含条目字面);写或删 `.zgatepolicy` 本身(这一条不问模型,直接问)
 
 **PASS**
@@ -227,7 +232,7 @@ HTTP 端点(§8):`POST /hook/claude-code`、`POST /decide`(收 `{action}` 返回
 ## 开发
 
 ```sh
-bun test            # 932 个测试,含 tests/golden/cases.yaml 的 68 条 golden 用例;模型层用 mock server,不需要真实模型
+bun test            # 1087 个测试,含 tests/golden/cases.yaml 的 83 条 golden 用例;模型层用 mock server,不需要真实模型
 bun run typecheck   # tsc --noEmit,strict
 ```
 
@@ -250,3 +255,5 @@ bun run typecheck   # tsc --noEmit,strict
 - 仓库策略 `.zgatepolicy`:自然语言 + `scope:` 行,只认 git 仓库根,软链接当不存在,只读前 4KB,3 秒缓存;`scope` 命中的非 read 调用升 `SOFT`,策略文本进模型 prompt 的稳定前缀;写策略文件本身直接问用户、不问模型
 - 策略只能收紧:不产生 deny、不放宽规则,策略文本只在 `policy.scope` 是唯一理由时进 prompt,没有策略时 prompt 与日志与 M2 逐字节相同
 - journal 可选的 `policy` 字段(路径、sha256、大小、命中的条目);`zgate check` 打印策略状态;`tests/eval/policy.yaml` 10 条策略评测用例
+- 规则层认"命令本身就是对外部系统的破坏":数据库 DDL 与重置、基础设施与云资源删除、发布部署、远程执行破坏命令与传输密钥文件、系统级操作、整份导出环境变量;删 / 写目标含未展开变量或 `~`、`rm` 目标来自 stdin 一律问
+- 适配器认全当前 Claude Code 的工具名:无动作的内部工具跳过,Monitor 按 Bash 解析,MultiEdit 按写处理,MCP 工具 `ask` 并写清 server

@@ -882,3 +882,180 @@
     rule_verdict: HARD_DENY
     verdict: deny
     rule_id: fs.rm_root
+
+# ── D15.10:命令本身对外部系统的破坏;未展开的目标;非 Bash 工具 ──────────────
+# 规则层原本只认文件 / git / 网络三类形态,这一类整段 PASS,模型永远看不到。
+
+- id: psql-drop-table-is-soft
+  setup:
+    git: { dir: "repo", branch: "main" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "psql -h prod-db.internal -U app -c 'drop table users'" }
+  expect:
+    verb: network
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: exec.db_destructive
+
+- id: psql-select-passes
+  # 反例:只读查询不问(有策略另说)
+  setup:
+    git: { dir: "repo", branch: "main" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "psql -h prod-db.internal -U app -c 'select count(*) from users'" }
+  expect:
+    verb: network
+    rule_verdict: PASS
+    verdict: allow
+
+- id: terraform-destroy-is-soft
+  setup:
+    git: { dir: "repo", branch: "main" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "terraform destroy -auto-approve" }
+  expect:
+    verb: exec
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: exec.infra_destructive
+
+- id: terraform-plan-passes
+  setup:
+    git: { dir: "repo", branch: "main" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "terraform plan" }
+  expect:
+    verb: exec
+    rule_verdict: PASS
+    verdict: allow
+
+- id: npm-publish-is-soft
+  setup:
+    git: { dir: "repo", branch: "main" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "npm publish" }
+  expect:
+    verb: exec
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: exec.publish_deploy
+
+- id: ssh-remote-rm-is-soft
+  setup:
+    git: { dir: "repo", branch: "main" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "ssh prod-server 'rm -rf /var/www'" }
+  expect:
+    verb: network
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: exec.remote_destructive
+
+- id: ssh-uptime-passes
+  setup:
+    git: { dir: "repo", branch: "main" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "ssh host uptime" }
+  expect:
+    verb: network
+    rule_verdict: PASS
+    verdict: allow
+
+- id: rm-unexpanded-variable-is-soft
+  # 解析层不展开变量,$DIR 被当成 cwd 里的字面路径,之前一路 PASS(fail-open)
+  setup:
+    git: { dir: "repo", branch: "main" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "rm -rf $DIR" }
+  expect:
+    verb: delete
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: fs.unresolved_target
+
+- id: rm-tilde-path-is-soft
+  setup:
+    git: { dir: "repo", branch: "main" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "rm -rf ~/Library/Caches/x" }
+  expect:
+    verb: delete
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: fs.unresolved_target
+
+- id: xargs-rm-from-stdin-is-soft
+  setup:
+    git: { dir: "repo", branch: "main" }
+    write: { "repo/list.txt": "a\n" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "xargs rm -rf < list.txt" }
+  expect:
+    verb: delete
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: fs.rm_operand_hidden
+
+- id: git-stash-drop-is-soft
+  setup:
+    git: { dir: "repo", branch: "main" }
+  cwd: "repo"
+  tool: Bash
+  tool_input: { command: "git stash drop" }
+  expect:
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: git.destructive
+
+- id: todowrite-tool-is-skipped
+  setup: { mkdir: ["repo"] }
+  cwd: "repo"
+  tool: TodoWrite
+  tool_input: { todos: [] }
+  expect:
+    actions: 0
+    rule_verdict: PASS
+    verdict: allow
+
+- id: agent-tool-is-skipped
+  # Task 的新名字;子 agent 的工具调用各自触发 hook
+  setup: { mkdir: ["repo"] }
+  cwd: "repo"
+  tool: Agent
+  tool_input: { prompt: "explore", description: "d", subagent_type: "Explore" }
+  expect:
+    actions: 0
+    rule_verdict: PASS
+    verdict: allow
+
+- id: monitor-tool-parses-command
+  setup: { mkdir: ["repo"] }
+  cwd: "repo"
+  tool: Monitor
+  tool_input: { command: "rm -rf /", description: "d" }
+  expect:
+    verb: delete
+    rule_verdict: HARD_DENY
+    verdict: deny
+    rule_id: fs.rm_root
+
+- id: mcp-tool-is-soft-with-server-name
+  setup: { mkdir: ["repo"] }
+  cwd: "repo"
+  tool: mcp__github__delete_repository
+  tool_input: { owner: "o", repo: "r" }
+  expect:
+    verb: unknown
+    rule_verdict: SOFT
+    verdict: ask
+    rule_id: tool.mcp

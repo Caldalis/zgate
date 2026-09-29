@@ -223,11 +223,77 @@ export function commandSegments(action: Action): string[] {
   return text === "" ? [] : segmentsOf(text, 0);
 }
 
+/** 一段里按 `|` / `|&` 切出的各级:最后一级的输出才回到 agent 的上下文。 */
+export function pipelineStages(segment: string): string[] {
+  return splitOutsideQuotes(segment, ["|&", "|"]);
+}
+
 /** 每一条简单命令:在 `commandSegments` 的基础上再按 `|` / `|&` 切。 */
 export function simpleCommands(action: Action): string[] {
   const out: string[] = [];
   for (const seg of commandSegments(action)) {
-    out.push(...splitOutsideQuotes(seg, ["|&", "|"]));
+    out.push(...pipelineStages(seg));
+  }
+  return out;
+}
+
+export interface SimpleCommand {
+  /** 命令名的 basename */
+  readonly head: string;
+  /** 命令名之后的全部词(引号已剥一层),含选项与重定向 */
+  readonly args: readonly string[];
+}
+
+/** 比 `unwrapShellC` 多认的包装词:它们后面跟的仍是"真正的命令"。 */
+const HEAD_WRAPPERS = new Set([...WRAPPERS, "xargs", "nice", "stdbuf", "caffeinate", "timeout", "gtimeout"]);
+const HEAD_WRAPPER_VALUE_OPTS = new Set([...WRAPPER_VALUE_OPTS, "-n", "-I", "-P", "-L", "-s", "-E", "-d", "-e", "-i", "-o", "-k", "-S"]);
+
+/**
+ * 一条简单命令的命令名与参数:剥掉包装词(sudo / env / xargs / timeout …)与前置赋值。
+ * 只有包装词、没有真正的命令时返回 null(`env` 单独一行就是这种)。
+ */
+export function simpleCommandHead(seg: string): SimpleCommand | null {
+  const toks = words(seg);
+  let i = 0;
+  let optZone = false;
+  while (i < toks.length) {
+    const t = toks[i] ?? "";
+    if (HEAD_WRAPPERS.has(baseName(t))) {
+      optZone = true;
+      i += 1;
+      if (baseName(t) === "timeout" || baseName(t) === "gtimeout") {
+        // timeout 的第一个非选项参数是时长,不是命令
+        while (i < toks.length && (toks[i] ?? "").startsWith("-")) i += HEAD_WRAPPER_VALUE_OPTS.has(toks[i] ?? "") ? 2 : 1;
+        i += 1;
+      }
+      continue;
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) {
+      i += 1;
+      continue;
+    }
+    if (optZone && t.startsWith("-")) {
+      i += HEAD_WRAPPER_VALUE_OPTS.has(t) ? 2 : 1;
+      continue;
+    }
+    break;
+  }
+  const head = toks[i];
+  if (head === undefined || head === "") return null;
+  return { head: baseName(head), args: toks.slice(i + 1) };
+}
+
+/** 去掉选项与重定向(`-rf`、`< list.txt`、`>out`)后剩下的位置参数。 */
+export function operandsOf(args: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i] ?? "";
+    if (/^\d*[<>]{1,2}[&|]?$/.test(a)) {
+      i += 1; // 算子单独一个词,下一个词是文件
+      continue;
+    }
+    if (/^\d*[<>]{1,2}/.test(a) || a.startsWith("-")) continue;
+    out.push(a);
   }
   return out;
 }

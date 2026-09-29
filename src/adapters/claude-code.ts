@@ -64,18 +64,35 @@ export interface HookInput {
  */
 export type AdapterResult = readonly Action[];
 
-/** 工具名 → verb。§10 的表,逐行照抄。 */
+/** 工具名 → verb。§10 的表,加 D15.10 补的 MultiEdit。 */
 const TOOL_VERB: ReadonlyMap<string, Verb> = new Map<string, Verb>([
   ["Read", "read"],
   ["Glob", "read"],
   ["Grep", "read"],
   ["Edit", "write"],
+  ["MultiEdit", "write"],
   ["Write", "write"],
   ["NotebookEdit", "write"],
   ["WebFetch", "network"],
   ["WebSearch", "network"],
-  // Bash 的 verb 由 §7 解析决定,不在这张表里
+  // Bash / Monitor 的 verb 由 §7 解析决定,不在这张表里
 ]);
+
+/**
+ * 没有可判动作的工具(D15.10):派生子 agent(子 agent 的工具调用各自触发 hook,§10 的 Task 就是这条)、
+ * 内部状态、与人或别的 agent 对话、后台任务的管理。返回空数组,管线按"无动作"放行。
+ * 不在这张表也不在 TOOL_VERB 里的工具名(包括所有 `mcp__*`)仍落 unknown → SOFT:回 allow 会跳过 Claude Code
+ * 自己的确认框,对语义不明的工具那是 fail-open。
+ */
+const SKIPPED_TOOLS = new Set([
+  "Task", "Agent", "Workflow",
+  "TodoWrite", "TodoRead", "Skill", "AskUserQuestion", "ExitPlanMode", "EnterPlanMode", "EndConversation",
+  "SendMessage", "ListAgents", "TaskStop", "TaskOutput", "KillShell", "BashOutput",
+  "CronCreate", "CronDelete", "CronList", "ScheduleWakeup", "PushNotification", "SendFeedback", "ReportFindings",
+]);
+
+/** 拿 `command` 字段跑 shell 的工具:Monitor 在后台跑一条命令,与 Bash 同一套解析。 */
+const SHELL_TOOLS = new Set(["Bash", "Monitor"]);
 
 /**
  * 工具名 → 取 target 的 `tool_input` 字段名(按优先级)。
@@ -90,6 +107,7 @@ const TOOL_VERB: ReadonlyMap<string, Verb> = new Map<string, Verb>([
 const TARGET_FIELDS: ReadonlyMap<string, readonly string[]> = new Map([
   ["Read", ["file_path"]],
   ["Edit", ["file_path"]],
+  ["MultiEdit", ["file_path"]],
   ["Write", ["file_path"]],
   ["NotebookEdit", ["notebook_path", "file_path"]],
   ["Glob", ["path"]],
@@ -147,9 +165,9 @@ export function toActions(input: HookInput, turnId: string): AdapterResult {
     session_id: asString(input.session_id),
   };
 
-  // §10:Task 跳过 —— 子 agent 的工具调用会各自触发 hook。
+  // §10:Task 跳过 —— 子 agent 的工具调用会各自触发 hook;D15.10 把同性质的工具一并列进 SKIPPED_TOOLS。
   // 返回空数组,管线按"无动作"放行。见文件末尾 TRIVIAL_EMPTY 注释。
-  if (toolName === "Task") return [];
+  if (SKIPPED_TOOLS.has(toolName)) return [];
 
   // Bash:Bash 是万能逃逸口(§7),它的 verb 和 targets 都由 shell 解析决定。
   //
@@ -164,7 +182,7 @@ export function toActions(input: HookInput, turnId: string): AdapterResult {
   // 第二种是**必须**的:空数组会在管线里被当成"没有动作可判"而放行。
   // 实测 `:(){ :|:& };:` 解析出来正是 [],而它是 §4.5 pre 轮点名的第一条
   // HARD_DENY 模式。没有这条 Action,那条规则连 match 的机会都没有。
-  if (toolName === "Bash") {
+  if (SHELL_TOOLS.has(toolName)) {
     const command = asString(toolInput["command"]);
     // 输入里压根没有 command 字段 —— 这不是"命令看不懂",是真的没东西可判。
     if (command === null) return [];
