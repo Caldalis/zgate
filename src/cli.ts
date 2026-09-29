@@ -143,6 +143,8 @@ function cmdServe(args: Args): number {
   console.log("");
   console.log("把这段加进 Claude Code 的 settings.json 即可接入(五段同一个 URL;只配 PreToolUse 也能拦,但没有结果信号):");
   console.log(JSON.stringify(hookSettingsSnippet(config.host, server.port ?? config.port), null, 2));
+  console.log("");
+  console.log(`opencode:把仓库里的 plugins/opencode/zgate.ts 复制到 ~/.config/opencode/plugins/,设 ZGATE_URL=http://${config.host}:${server.port ?? config.port}(默认 8787 可不设),见 README。`);
   return 0;
 }
 

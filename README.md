@@ -1,6 +1,6 @@
 # zgate
 
-本地常驻的 Agent 工具调用决策网关。Coding agent(目前是 Claude Code)在执行每个工具调用之前把这次调用发给它,它在毫秒级内返回 `allow` / `ask` / `deny`。
+本地常驻的 Agent 工具调用决策网关。Coding agent(Claude Code、opencode)在执行每个工具调用之前把这次调用发给它,它在毫秒级内返回 `allow` / `ask` / `deny`。
 
 它解决的问题:正则规则只认字符串,`rm -rf ./build` 永远"安全",哪怕 `build` 是指向生产目录的软链接;云端模型能懂语义,但一次一两秒,一个 session 几百次调用。zgate 跑在本地,先用规则层认死的危险模式(1 毫秒,不可推翻),再用环境探针(真实路径、软链接、git 分支)把"同一条命令在不同环境里风险不同"这件事判出来。
 
@@ -52,6 +52,36 @@ bun build --compile src/cli.ts --outfile zgate
 hook 超时或 daemon 没起时,Claude Code 走它自己原本的权限流程,不会因为 zgate 不在而卡住。zgate 自己内部出错时回 `ask`,同样是"没装网关时的行为"。
 
 `matcher: ""` 让每个工具都过网关。文件与 shell 类工具(Bash、Monitor、Read、Glob、Grep、Edit、MultiEdit、Write、NotebookEdit、WebFetch、WebSearch)按各自的动词判;没有可判动作的内部工具(Agent / Task、TodoWrite、Skill、AskUserQuestion、ExitPlanMode、EnterPlanMode、KillShell、BashOutput、SendMessage 等)直接放行、不进日志;MCP 工具(`mcp__<server>__<tool>`)语义不透明,一律 `ask`(配了模型由模型判),理由里写清是哪个 server;完全不认识的工具名也 `ask`。如果你的 settings 里定义了 `allowedHttpHookUrls`,要把 zgate 的 URL 加进去。
+
+## 接入 opencode
+
+opencode 没有 http hook,扩展点是进程内插件。仓库里的 `plugins/opencode/zgate.ts` 就是那个插件,不依赖任何包。
+
+1. 起 daemon:`zgate serve`。
+2. 把 `plugins/opencode/zgate.ts` 复制到 `~/.config/opencode/plugins/`(全局)或项目的 `.opencode/plugins/`。daemon 不在 8787 时设环境变量 `ZGATE_URL`,或在 `opencode.json` 里写 `"plugin": [["./.opencode/plugins/zgate.ts", { "url": "http://127.0.0.1:8790" }]]`。
+3. 让 opencode 先"默认问",网关才有东西可以放行。opencode 自己的默认几乎全是 allow,所以在 `opencode.json` 里写:
+
+   ```json
+   { "permission": { "bash": "ask", "edit": "ask", "webfetch": "ask" } }
+   ```
+
+插件做的事,对照 Claude Code 那条路:
+
+| zgate 的裁决 | 在 opencode 里发生什么 |
+|---|---|
+| `deny` | `tool.execute.before` 里抛错,工具不执行,模型看到理由(`zgate 拦截:…`) |
+| `allow` | opencode 弹确认框时(`permission.asked` 事件)插件替你回 `once`,框不用点 |
+| `ask` | 插件什么都不做,opencode 自己的确认框照常弹 |
+
+网关不在时插件不干预,一切按 opencode 自己的权限配置走。零码改动也能用它当纯拦截器:不配 `permission: ask`,网关只会 `deny`。
+
+结果信号比 Claude Code 多一样:opencode 会广播用户在确认框里的回答(`permission.replied`),所以 zgate 判 `ask` 的调用能记到 `rejected`(用户点了拒绝)与 `approved`(点了 once / always;`tool_succeeded` 为 null,不等工具跑完);工具跑完但没见到人的回答(opencode 自己的规则放行了它)记 `unknown / true`。journal 里这些行 `agent.name` 是 `opencode`,`hook.tool_use_id` 是 opencode 的 callID,没有 `permission_mode`。
+
+已知限制(opencode 1.18.33,2026-09-29 真机验证:allow / deny / ask 三条路各一次):
+
+- `@opencode-ai/plugin` 声明了 `permission.ask` 钩子,但 1.18.33 的源码里没有任何触发点,所以"放行"只能靠事件到了再替你回 `once`,确认框可能闪一下。
+- `opencode run`(无人值守、不带 `--auto`)会自动拒绝一切确认框。它与插件的 `once` 是竞态,实测插件赢了,但不保证;它拒绝的那些在 journal 里也是 `rejected`,不是人点的,读日志时按 session 剔掉。
+- 网关只能把 opencode 要问的变成不问、把任何调用变成拦,不能把 opencode 已经放行的变成问。
 
 ## 接模型(可选)
 
@@ -169,7 +199,7 @@ zgate check "rm -rf ./migrations"                      # ASK  触及策略保护
 | `zgate bench [--n N] [--http] [--json]` | 跑 N 次混合请求打印 p50/p95/p99。`--http` 起真 daemon 量端到端 |
 | `zgate eval [--cases FILE] [--json]` | 拿 `tests/eval/cases.yaml`(21 条人工标注的 `SOFT` 样本)跑配置里的模型,打印一致率、该问却放行、误打断与延迟。模型数字的复现入口;`--cases tests/eval/policy.yaml` 是 10 条策略用例 |
 
-HTTP 端点(§8):`POST /hook/claude-code`(PreToolUse 裁决;PostToolUse / PostToolUseFailure / PostToolBatch / SessionEnd 只写 outcome)、`POST /decide`(收 `{action}` 返回 Decision,供其他适配器)、`POST /outcome`(外部记录用户实际选择,与钩子推出来的 outcome 同一入口)、`GET /healthz`。
+HTTP 端点(§8):`POST /hook/claude-code`(PreToolUse 裁决;PostToolUse / PostToolUseFailure / PostToolBatch / SessionEnd 只写 outcome)、`POST /hook/opencode`(插件的 before 裁决回 Decision;replied / after 只写 outcome)、`POST /decide`(收 `{action}` 返回 Decision,供其他适配器)、`POST /outcome`(外部记录用户实际选择,与钩子推出来的 outcome 同一入口)、`GET /healthz`。
 
 ## 决策规则
 
@@ -251,7 +281,7 @@ Claude Code 不回传用户在确认框里点了什么,但工具**真的执行�
 ## 开发
 
 ```sh
-bun test            # 1159 个测试,含 tests/golden/cases.yaml 的 83 条 golden 用例;模型层用 mock server,不需要真实模型
+bun test            # 1202 个测试,含 tests/golden/cases.yaml 的 83 条 golden 用例;模型层用 mock server,不需要真实模型
 bun run typecheck   # tsc --noEmit,strict
 ```
 
@@ -279,3 +309,4 @@ bun run typecheck   # tsc --noEmit,strict
 - 结果信号:`/hook/claude-code` 按 `hook_event_name` 分派,`PostToolUse` / `PostToolUseFailure` 对回悬着的 `ask` 写 `approved`,`PostToolBatch` / `SessionEnd` 把没执行就落定的写 `unknown`;旁观事件一律回 `{}`,PreToolUse 的响应逐字节不变
 - journal 可选的 `hook` 字段(`tool_use_id`、`permission_mode`、`prompt_id`);内存悬着表(按 session × tool_use_id,TTL 30 分钟、上限一万);`zgate serve` 打印五段 settings 片段
 - `zgate journal stats`:按 `rule_id × source` 数问了多少、多少被点通过、多少 unknown、多少没结果
+- opencode 适配器:`POST /hook/opencode` + 随仓库分发的进程内插件 `plugins/opencode/zgate.ts`,deny 在执行前抛错、allow 替用户回 once、ask 交给 opencode 自己的确认框;用户的回答与工具执行完成回写 outcome(`rejected` / `approved` / `unknown`);bash 的 `workdir`、`apply_patch` 的逐文件目标都认

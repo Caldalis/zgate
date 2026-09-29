@@ -6,6 +6,7 @@
 //   /hook/claude-code  Claude Code 的钩子入口。PreToolUse 走 §10 的格式转换与裁决;
 //                      PostToolUse / PostToolUseFailure / PostToolBatch / SessionEnd 只旁观:
 //                      查悬着表、写 outcome 补丁、回 {}(spec-m4 §2,D16.0)
+//   /hook/opencode     opencode 插件的入口(spec-m5):before 走裁决回 Decision;replied / after 只写 outcome、回 {}
 //   /decide            通用入口,供测试和其他适配器用(收 Action,返回 Decision)
 //   /outcome           M4 数据飞轮的入口。追加进日志,不做分析;钩子推出来的 outcome 与它同一入口
 //   /healthz           存活检查
@@ -28,6 +29,7 @@ import type { ModelBackend } from "./core/model.ts";
 import { decideAllAsync, type PipelineOptions } from "./core/pipeline.ts";
 import { hookDetails, parseHookEvent, toActions, toHookResponse, type HookEvent, type HookInput, type HookResponse } from "./adapters/claude-code.ts";
 import { PendingAsks } from "./core/pending.ts";
+import { opencodeHookDetails, parseOpencodeEvent, toActionsOpencode, type OpencodeEvent } from "./adapters/opencode.ts";
 
 /** §8:默认 8787,只绑 loopback。 */
 export const DEFAULT_PORT = 8787;
@@ -277,6 +279,78 @@ async function handleOutcome(req: Request): Promise<Response> {
   return json({ ok: true });
 }
 
+/**
+ * spec-m5 的 `/hook/opencode`。发送方是 zgate 自己的插件,所以响应就是 §2.3 的 Decision(与 /decide 同形),
+ * 插件只读 verdict / reason。"不表态"也走 /decide 那套:verdict ask、source fallback,不记日志(D14.21)——
+ * 插件收到 ask 什么都不做,交给 opencode 自己的确认框,正是"没装网关时的行为"。
+ */
+async function handleOpencode(req: Request, opts: PipelineOptions, pending: PendingAsks): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return json(neutralDecision("网关无法解析本次请求"));
+  }
+  const event = parseOpencodeEvent(body);
+  if (event === null) return json(neutralDecision("网关无法识别本次调用"));
+  if (event.kind !== "before") return json(observeOpencode(event, pending));
+
+  const turnId = crypto.randomUUID();
+  let actions: readonly Action[];
+  try {
+    actions = toActionsOpencode(event, turnId);
+  } catch {
+    return json(neutralDecision("网关解析调用参数失败"));
+  }
+  if (actions.length === 0) {
+    return json({ verdict: "allow", reason: "", source: "rule", rule_id: null, confidence: null, latency_ms: 0, decision_id: turnId });
+  }
+  try {
+    const result = await decideAllAsync(actions, opts);
+    const now = new Date();
+    const hook = opencodeHookDetails(event);
+    for (const { action, context, decision, modelDetails, policy } of result.perAction) {
+      record(action, context, decision, now, modelDetails, policy, hook);
+    }
+    if (hook !== null && result.decision.verdict === "ask") {
+      const asked = result.perAction.filter((p) => p.decision.verdict === "ask").map((p) => p.decision.decision_id);
+      pending.put(sessionOf(event.sessionId), hook.tool_use_id, asked);
+    }
+    return json(result.decision);
+  } catch {
+    return json(neutralDecision("网关内部错误"));
+  }
+}
+
+/**
+ * opencode 给的比 Claude Code 多一样东西:用户在确认框里的回答(permission.replied)。
+ *   replied reject        → rejected / null(用户点了拒绝,事实)
+ *   replied once / always → approved / null(用户点了通过;工具结果此时未知,不等 after)
+ *   after                 → unknown / true(工具跑了,但我们没见到人的回答:opencode 自己的规则放行了它)
+ * 取到即移出,先到先得。任何异常回 {}。
+ */
+function observeOpencode(event: Exclude<OpencodeEvent, { kind: "before" }>, pending: PendingAsks): Record<string, never> {
+  try {
+    const now = new Date();
+    if (event.kind === "replied") {
+      const ids = pending.take(sessionOf(event.sessionId), event.callId);
+      if (ids !== null) {
+        const outcome: Outcome =
+          event.reply === "reject" ? { user_action: "rejected", tool_succeeded: null }
+          : event.reply === "once" || event.reply === "always" ? { user_action: "approved", tool_succeeded: null }
+          : { user_action: "unknown", tool_succeeded: null };
+        for (const id of ids) recordOutcome(id, outcome, now);
+      }
+    } else if (event.kind === "after") {
+      const ids = pending.take(sessionOf(event.sessionId), event.callId);
+      if (ids !== null) for (const id of ids) recordOutcome(id, { user_action: "unknown", tool_succeeded: true }, now);
+    }
+  } catch {
+    // 旁观者不表态
+  }
+  return {};
+}
+
 function handleHealthz(config: ServerConfig): Response {
   return json({
     ok: true,
@@ -303,7 +377,7 @@ export function createServer(config: ServerConfig = defaultConfig()) {
   const server = Bun.serve({
     port: config.port,
     hostname: config.host,
-    // 只处理这四条路由;其余一律 404。不做通配、不做中间件链 ——
+    // 只处理这五条路由;其余一律 404。不做通配、不做中间件链 ——
     // §1 说不许引入 HTTP 框架,那也包括"手写的迷你框架"。
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
@@ -317,6 +391,9 @@ export function createServer(config: ServerConfig = defaultConfig()) {
       }
       if (path === "/hook/claude-code") {
         return req.method === "POST" ? handleHook(req, opts, pending) : json({ error: "只支持 POST" }, 405);
+      }
+      if (path === "/hook/opencode") {
+        return req.method === "POST" ? handleOpencode(req, opts, pending) : json({ error: "只支持 POST" }, 405);
       }
       if (path === "/outcome") {
         return req.method === "POST" ? handleOutcome(req) : json({ error: "只支持 POST" }, 405);
