@@ -80,7 +80,7 @@ zgate 只发 HTTP,不启动、不管理 llama-server。请求走 `/v1/chat/compl
 
 `provider` 为 `"openai"` 时打 `<base_url>/v1/chat/completions`,`base_url` 可指向 Groq / DeepSeek / 自建服务(包括本机的 llama-server)。云端没有 grammar,所以用两家各自的结构化输出(Anthropic 的 `output_config.format`、OpenAI 的 `response_format: json_schema`)让服务端只回 `{"verdict": "allow"}` 或 `{"verdict": "ask"}`;回复必须恰好是这一个 JSON 对象,否则算格式错误,重新生成,最多 5 次,超过就降级为 `ask`。云端不算置信度(`confidence` 为 null);5xx 与网络错误重试一次,4xx / 429 不重试。
 
-Anthropic 这条路按官方文档实现并用 mock 测过,OpenAI 兼容路径用本机 llama-server 验过;**真实的 Anthropic 接口尚未跑过**(开发机没有密钥)。字段若对不上,表现是格式错误、降级为 `ask`,方向安全。验证办法:设好 `ANTHROPIC_API_KEY`,用云端配置跑一次 `zgate eval`,约二十次调用,几分钱。
+两条路都在真实网关上跑过(2026-09-29,一个同时服务 Claude 与 GLM 的 Anthropic 兼容网关):`provider: "openai"` + `glm-5.3-lis` 跑完 `zgate eval` 21 条与策略 10 条,零降级,p50 约 0.5 秒;`provider: "anthropic"` + `claude-opus-5-5` 单次调用,`output_config` 的结构化输出被遵守,回的恰好是 `{"verdict":"allow"}`。**思考模型不要走 `anthropic` 协议**:GLM 这类模型会把推理写进 text block、64 个 token 到不了 JSON,zgate 会格式错误 5 次后降级为 `ask`(实测 4.8 秒,方向安全但白等);走 `openai` 协议时 `chat_template_kwargs.enable_thinking=false` 能关掉它。glm-5.3-lis 在 21 条评测上 15/21 一致、3/12 该问却放行(含指向仓库外的软链接那条)、3/9 误打断;策略集 8/10、2/7 漏放 —— 比本机 9B 快一倍,但漏放更多,不建议单独当后端。
 
 **chain**(本地优先,不确定时升级云端):
 
