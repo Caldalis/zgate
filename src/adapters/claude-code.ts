@@ -6,8 +6,8 @@
 // ── 参照的官方文档 ────────────────────────────────────────────────
 // URL:    https://code.claude.com/docs/en/hooks
 // (旧域名 docs.claude.com/en/docs/claude-code/hooks 301 跳到上面这个)
-// 查证日期: 2026-09-11
-// 本机 Claude Code 版本: 2.1.268
+// 查证日期: 2026-09-11(M1);2026-09-29 按 M4 复核 Post 类事件(spec-m4 附录 A / B,D16.0)
+// 本机 Claude Code 版本: 2.1.268(M1);2.1.284(M4 探针)
 //
 // 核对结果 —— §10 描述的三处,文档全部一致,无需按 §15 停下来问:
 //   1. hook 支持 `type: "http"`,POST 事件 JSON 到 url,响应体用同一套
@@ -30,16 +30,22 @@
 //     系统而不是 hook"。我们的定位本就是"减少打断",不是仅有的那道闸 ——
 //     与 §3.2「最坏情况不低于纯规则 baseline」一致。
 //
-// 文档里有、§10 未提及、本实现**不使用**的输入字段:
-//   agent_id / agent_type(仅在 --agent 或子 agent 内出现)、
-//   permission_mode、transcript_path、prompt_id、scratchpad_dir、effort。
-//   不使用的原因:§2.1 的 Action 形状固定,这些字段没有落脚点。
-//   `permission_mode` 值得以后留意 —— `bypassPermissions` 下 hook 仍会跑。
+// 文档里有、§10 未提及、本实现**不进 Action** 的输入字段:
+//   agent_id / agent_type(仅在 --agent 或子 agent 内出现)、transcript_path、scratchpad_dir、effort。
+//   原因:§2.1 的 Action 形状固定,这些字段没有落脚点。
+//
+// M4 起(spec-m4 §4,D16.0)另有三个字段**只进 journal 的 `hook`**,不进 Action:
+//   tool_use_id —— PreToolUse / PostToolUse / PostToolUseFailure / PostToolBatch 上同一个,靠它把"问了"和"用户点了通过后
+//                  工具真的跑了"对上;形状随后端变(toolu_… / chatcmpl-tool-…),当不透明字符串
+//   permission_mode —— bypassPermissions / dontAsk 下 hook 照样跑,Python 侧靠它把那些行从标注里剔掉
+//   prompt_id —— 同一条用户提示下的调用共用,备查
+// Post 类事件由 parseHookEvent 认出,server 只查悬着表、写补丁、回 {}:适配器仍只做格式转换。
 
 import { ActionSchema } from "../core/action.ts";
 import type { Action, Verb } from "../core/action.ts";
 import { parseCommand } from "../shell/index.ts";
 import type { Decision, Verdict } from "../core/decision.ts";
+import type { HookDetails } from "../core/journal.ts";
 
 /** Claude Code 的 PreToolUse hook 原始输入。只声明我们真的会读的字段。 */
 export interface HookInput {
@@ -48,6 +54,10 @@ export interface HookInput {
   readonly hook_event_name?: string | null;
   readonly tool_name?: string | null;
   readonly tool_input?: Record<string, unknown> | null;
+  // M4:只进 journal 的 hook 字段,老版本 Claude Code 没有(spec-m4 §4)
+  readonly tool_use_id?: string | null;
+  readonly permission_mode?: string | null;
+  readonly prompt_id?: string | null;
 }
 
 /**
@@ -267,6 +277,74 @@ export function parseHookInput(raw: unknown): HookInput | null {
   const ti = o["tool_input"];
   if (ti !== undefined && ti !== null && (typeof ti !== "object" || Array.isArray(ti))) return null;
   return o as HookInput;
+}
+
+/**
+ * M4:PreToolUse 输入里能与 Post 事件对账的字段(spec-m4 §4)。
+ * 没有 `tool_use_id`(老版本 Claude Code,或 `/decide` 之类不经 hook 的入口)就是 null,journal 里就没有 `hook` 键。
+ * permission_mode / prompt_id 有就抄,没有就不写键 —— 与 journal 其它可选字段同一做法。
+ */
+export function hookDetails(input: HookInput): HookDetails | null {
+  const toolUseId = asString(input.tool_use_id);
+  if (toolUseId === null) return null;
+  const mode = asString(input.permission_mode);
+  const promptId = asString(input.prompt_id);
+  return {
+    tool_use_id: toolUseId,
+    ...(mode === null ? {} : { permission_mode: mode }),
+    ...(promptId === null ? {} : { prompt_id: promptId }),
+  };
+}
+
+/**
+ * M4:`/hook/claude-code` 收到的一次事件,按 `hook_event_name` 分成网关关心的几类(spec-m4 §2)。
+ *
+ *   PreToolUse           照 M3 裁决(input 即 parseHookInput 的结果)
+ *   PostToolUse /
+ *   PostToolUseFailure   工具真的执行了:悬着的 ask 补 approved
+ *   PostToolBatch        一批落定:批里仍悬着的 id 没执行就落定了,补 unknown(D16.0)
+ *   SessionEnd           该 session 悬着的全部补 unknown
+ *   other                旁观:PermissionRequest / Notification / Stop / …,server 回 {}
+ *
+ * 没写 `hook_event_name` 的按 PreToolUse 处理:M1–M3 的调用方(bench、测试)只发这一种。
+ * 返回 null 只有一种情况:是 PreToolUse 却连 tool_name 都没有 —— 与 parseHookInput 的 null 同义,server 回"不表态"。
+ */
+export type HookEvent =
+  | { readonly kind: "PreToolUse"; readonly input: HookInput }
+  | { readonly kind: "PostToolUse" | "PostToolUseFailure"; readonly sessionId: string | null; readonly toolUseId: string }
+  | { readonly kind: "PostToolBatch"; readonly sessionId: string | null; readonly toolUseIds: readonly string[] }
+  | { readonly kind: "SessionEnd"; readonly sessionId: string | null }
+  | { readonly kind: "other"; readonly name: string };
+
+export function parseHookEvent(raw: unknown): HookEvent | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const name = asString(o["hook_event_name"]);
+  const sessionId = asString(o["session_id"]);
+
+  if (name === null || name === "PreToolUse") {
+    const input = parseHookInput(raw);
+    return input === null ? null : { kind: "PreToolUse", input };
+  }
+  if (name === "PostToolUse" || name === "PostToolUseFailure") {
+    const toolUseId = asString(o["tool_use_id"]);
+    // 没有 id 对不上任何悬着的 ask,只能旁观
+    return toolUseId === null ? { kind: "other", name } : { kind: name, sessionId, toolUseId };
+  }
+  if (name === "PostToolBatch") {
+    const calls = o["tool_calls"];
+    const toolUseIds: string[] = [];
+    if (Array.isArray(calls)) {
+      for (const c of calls) {
+        if (typeof c !== "object" || c === null) continue;
+        const id = asString((c as Record<string, unknown>)["tool_use_id"]);
+        if (id !== null) toolUseIds.push(id);
+      }
+    }
+    return { kind: "PostToolBatch", sessionId, toolUseIds };
+  }
+  if (name === "SessionEnd") return { kind: "SessionEnd", sessionId };
+  return { kind: "other", name };
 }
 
 /**

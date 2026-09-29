@@ -547,3 +547,77 @@ describe("§9 M3 扩展:policy(可选字段,v 仍是 1,spec-m3 §5 / D15.4)", ()
     expect(entries.length).toBe(0);
   });
 });
+
+// ===========================================================================
+describe("§9 M4 扩展:hook(可选字段,v 仍是 1,spec-m4 §4 / D16.0)", () => {
+  const hook = { tool_use_id: "toolu_01DBfa9trram4VTT8pV5fkNQ", permission_mode: "default", prompt_id: "a5a32a88-83a1-466e-8530-4f66c985a858" };
+
+  test("不传 hook 时行里没有这个键(/decide 进来的行)", () => {
+    record(action(), context(), decision());
+    flushJournal();
+    const obj = JSON.parse(readAll().trim());
+    expect("hook" in obj).toBe(false);
+    expect(obj["v"]).toBe(1);
+  });
+
+  test("传了就原样落盘,能过 schema,字段全 snake_case", () => {
+    record(action(), context(), decision({ verdict: "ask", reason: "目标在 cwd 之外", rule_id: "fs.outside_cwd" }), new Date(), null, null, hook);
+    flushJournal();
+    const obj = JSON.parse(readAll().trim());
+    expect(obj["hook"]).toEqual(hook);
+    expect(JournalLineSchema.safeParse(obj).success).toBe(true);
+    for (const k of Object.keys(obj["hook"])) expect(k).toMatch(/^[a-z_]+$/);
+  });
+
+  test("replay 把 hook 带回;没有的行是 null", () => {
+    record(action(), context(), decision({ decision_id: "with-hook" }), new Date(), null, null, hook);
+    record(action(), context(), decision({ decision_id: "no-hook" }));
+    flushJournal();
+    const { entries, badLines } = replay(readAll());
+    expect(badLines).toBe(0);
+    expect(entries[0]!.hook).toEqual(hook);
+    expect(entries[1]!.hook).toBeNull();
+  });
+
+  test("只有 tool_use_id 也合法(老版本没有 permission_mode / prompt_id)", () => {
+    record(action(), context(), decision({ decision_id: "id-only" }), new Date(), null, null, { tool_use_id: "t1" });
+    flushJournal();
+    const { entries, badLines } = replay(readAll());
+    expect(badLines).toBe(0);
+    expect(entries[0]!.hook).toEqual({ tool_use_id: "t1" });
+  });
+
+  test("★ permission_mode 是开放字符串:Claude Code 加新模式不丢行(D14.20 的教训)", () => {
+    record(action(), context(), decision({ decision_id: "new-mode" }), new Date(), null, null, { tool_use_id: "t1", permission_mode: "brandNewMode" });
+    flushJournal();
+    const { entries, badLines } = replay(readAll());
+    expect(badLines).toBe(0);
+    expect(entries[0]!.hook?.permission_mode).toBe("brandNewMode");
+  });
+
+  test("hook 里的未知键不丢行,被剥掉", () => {
+    record(action(), context(), decision({ decision_id: "extra-key" }), new Date(), null, null, { ...hook, effort: { level: "xhigh" } } as never);
+    flushJournal();
+    const { entries, badLines } = replay(readAll());
+    expect(badLines).toBe(0);
+    expect(entries[0]!.hook).toEqual(hook);
+  });
+
+  test("hook 结构坏了(tool_use_id 不是字符串 / 空串)→ 坏行,那是升 v 的事", () => {
+    record(action(), context(), decision({ decision_id: "bad-hook-1" }), new Date(), null, null, { tool_use_id: 42 } as never);
+    record(action(), context(), decision({ decision_id: "bad-hook-2" }), new Date(), null, null, { tool_use_id: "" });
+    flushJournal();
+    const { entries, badLines } = replay(readAll());
+    expect(badLines).toBe(2);
+    expect(entries.length).toBe(0);
+  });
+
+  test("M3 写出的行(没有 hook)仍过 M4 的 schema;outcome 补丁照旧按 decision_id 拼上", () => {
+    record(action(), context(), decision({ verdict: "ask", decision_id: "m3-row" }), new Date(), null, null, hook);
+    recordOutcome("m3-row", { user_action: "approved", tool_succeeded: true });
+    flushJournal();
+    const { entries } = replay(readAll());
+    expect(entries[0]!.outcome).toEqual({ user_action: "approved", tool_succeeded: true });
+    expect(entries[0]!.hook).toEqual(hook);
+  });
+});

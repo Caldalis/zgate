@@ -20,6 +20,7 @@ import {
   validateAction,
 } from "../src/adapters/claude-code.ts";
 import type { HookInput } from "../src/adapters/claude-code.ts";
+import { hookDetails, parseHookEvent, parseHookInput as parseHookInputM4 } from "../src/adapters/claude-code.ts";
 
 const TURN = "turn-0001";
 
@@ -586,5 +587,117 @@ describe("端到端形状", () => {
     const a = toActions(input, TURN);
     const b = toActions(input, TURN);
     expect(a).toEqual(b);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// M4:hook 字段与事件分派(spec-m4 §2 / §4,D16.0)
+// ─────────────────────────────────────────────────────────────────
+
+describe("M4 hookDetails:只进 journal 的对账字段", () => {
+  test("带 tool_use_id 的 PreToolUse 输入 → 三个字段都抄下来", () => {
+    expect(hookDetails({ tool_name: "Bash", tool_use_id: "toolu_01A", permission_mode: "default", prompt_id: "p-1" })).toEqual({
+      tool_use_id: "toolu_01A",
+      permission_mode: "default",
+      prompt_id: "p-1",
+    });
+  });
+
+  test("没有 tool_use_id(老版本 Claude Code / cli 的 check)→ null", () => {
+    expect(hookDetails({ tool_name: "Bash", tool_input: { command: "ls" } })).toBeNull();
+    expect(hookDetails({ tool_name: "Bash", tool_use_id: "" })).toBeNull();
+    expect(hookDetails({ tool_name: "Bash", tool_use_id: null })).toBeNull();
+  });
+
+  test("permission_mode / prompt_id 缺了就不写键,不写 null", () => {
+    const d = hookDetails({ tool_name: "Bash", tool_use_id: "toolu_1" });
+    expect(d).toEqual({ tool_use_id: "toolu_1" });
+    expect(d !== null && "permission_mode" in d).toBe(false);
+    expect(d !== null && "prompt_id" in d).toBe(false);
+  });
+
+  test("id 是不透明字符串:经代理的 chatcmpl-tool-… 也照收(D16.0)", () => {
+    expect(hookDetails({ tool_name: "Bash", tool_use_id: "chatcmpl-tool-8f3d87991157ed19" })?.tool_use_id).toBe("chatcmpl-tool-8f3d87991157ed19");
+  });
+
+  test("未知的 permission_mode 值照收(Claude Code 还会加新模式)", () => {
+    expect(hookDetails({ tool_name: "Bash", tool_use_id: "t", permission_mode: "brandNewMode" })?.permission_mode).toBe("brandNewMode");
+  });
+});
+
+describe("M4 parseHookEvent:按 hook_event_name 分派", () => {
+  test("PreToolUse → kind PreToolUse,input 就是 parseHookInput 的结果", () => {
+    const raw = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "ls" }, tool_use_id: "t1" };
+    const ev = parseHookEvent(raw);
+    expect(ev?.kind).toBe("PreToolUse");
+    if (ev?.kind === "PreToolUse") expect(ev.input).toEqual(parseHookInputM4(raw) as HookInput);
+  });
+
+  test("★ 没写 hook_event_name 的按 PreToolUse 处理(M1–M3 的调用方与 bench 只发这一种)", () => {
+    expect(parseHookEvent({ tool_name: "Read", tool_input: { file_path: "/a" } })?.kind).toBe("PreToolUse");
+  });
+
+  test("PreToolUse 却没有 tool_name → null(与 parseHookInput 同义,server 回不表态)", () => {
+    expect(parseHookEvent({ hook_event_name: "PreToolUse" })).toBeNull();
+    expect(parseHookEvent({ 完全不是: "hook 格式" })).toBeNull();
+  });
+
+  test("非对象 → null", () => {
+    for (const bad of [null, undefined, 42, "str", true, [1]]) expect(parseHookEvent(bad)).toBeNull();
+  });
+
+  test("PostToolUse / PostToolUseFailure 带 tool_use_id → 各自的 kind,带 session", () => {
+    const ok = parseHookEvent({
+      hook_event_name: "PostToolUse", session_id: "s", tool_name: "Bash", tool_input: { command: "ls" },
+      tool_use_id: "t1", tool_response: { stdout: "", stderr: "" }, duration_ms: 3,
+    });
+    expect(ok).toEqual({ kind: "PostToolUse", sessionId: "s", toolUseId: "t1" });
+    const fail = parseHookEvent({ hook_event_name: "PostToolUseFailure", session_id: "s", tool_use_id: "t2", error: "Exit code 1", is_interrupt: false });
+    expect(fail).toEqual({ kind: "PostToolUseFailure", sessionId: "s", toolUseId: "t2" });
+  });
+
+  test("Post 事件缺 tool_use_id → other(对不上任何悬着的 ask,只能旁观)", () => {
+    expect(parseHookEvent({ hook_event_name: "PostToolUse", tool_name: "Bash" })).toEqual({ kind: "other", name: "PostToolUse" });
+    expect(parseHookEvent({ hook_event_name: "PostToolUseFailure", tool_use_id: 7 })).toEqual({ kind: "other", name: "PostToolUseFailure" });
+  });
+
+  test("PostToolBatch → 批里每条的 tool_use_id,坏条目跳过;没有 session 时 sessionId 是 null", () => {
+    const ev = parseHookEvent({
+      hook_event_name: "PostToolBatch", session_id: "s",
+      tool_calls: [{ tool_name: "Bash", tool_use_id: "t1", tool_response: "\"x\"" }, "garbage", { tool_name: "Read" }, { tool_use_id: "t2" }],
+    });
+    expect(ev).toEqual({ kind: "PostToolBatch", sessionId: "s", toolUseIds: ["t1", "t2"] });
+    expect(parseHookEvent({ hook_event_name: "PostToolBatch" })).toEqual({ kind: "PostToolBatch", sessionId: null, toolUseIds: [] });
+  });
+
+  test("SessionEnd → kind SessionEnd,带 session;没有 session_id 时 null", () => {
+    expect(parseHookEvent({ hook_event_name: "SessionEnd", session_id: "s", reason: "prompt_input_exit" })).toEqual({ kind: "SessionEnd", sessionId: "s" });
+    expect(parseHookEvent({ hook_event_name: "SessionEnd" })).toEqual({ kind: "SessionEnd", sessionId: null });
+  });
+
+  test("旁观的事件 → other,带原名(PermissionRequest / Notification / Stop / 未来的新事件)", () => {
+    for (const name of ["PermissionRequest", "PermissionDenied", "Notification", "Stop", "UserPromptSubmit", "BrandNewEvent"]) {
+      expect(parseHookEvent({ hook_event_name: name, session_id: "s", tool_name: "Bash" })).toEqual({ kind: "other", name });
+    }
+  });
+
+  test("★ 2.1.284 真机 body 原样能分派(D16.0 探针记下的形状)", () => {
+    const common = {
+      session_id: "5712aca3-3fb2-4afe-9ba4-0556d812fadc", prompt_id: "a5a32a88-83a1-466e-8530-4f66c985a858",
+      transcript_path: "/Users/x/.claude/projects/p/5712aca3.jsonl", cwd: "/private/tmp/zg-m4-probe/proj", permission_mode: "default", effort: { level: "xhigh" },
+    };
+    const pre = parseHookEvent({ ...common, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "echo zg-ask-1 > approved.txt", description: "Write" }, tool_use_id: "toolu_01DBfa9trram4VTT8pV5fkNQ" });
+    expect(pre?.kind).toBe("PreToolUse");
+    if (pre?.kind === "PreToolUse") {
+      expect(hookDetails(pre.input)).toEqual({ tool_use_id: "toolu_01DBfa9trram4VTT8pV5fkNQ", permission_mode: "default", prompt_id: common.prompt_id });
+    }
+    expect(parseHookEvent({ ...common, hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: { command: "echo zg-ask-1 > approved.txt" }, tool_response: { stdout: "", stderr: "", interrupted: false, isImage: false, noOutputExpected: false }, tool_use_id: "toolu_01DBfa9trram4VTT8pV5fkNQ", duration_ms: 734 }))
+      .toEqual({ kind: "PostToolUse", sessionId: common.session_id, toolUseId: "toolu_01DBfa9trram4VTT8pV5fkNQ" });
+    expect(parseHookEvent({ ...common, hook_event_name: "PostToolUseFailure", tool_name: "Bash", tool_input: { command: "cat /nonexistent/zg-ask-3.txt" }, tool_use_id: "toolu_01F4HCiVxNvH9covLYVuyfgR", error: "Exit code 1\ncat: …", is_interrupt: false, duration_ms: 47 }))
+      .toEqual({ kind: "PostToolUseFailure", sessionId: common.session_id, toolUseId: "toolu_01F4HCiVxNvH9covLYVuyfgR" });
+    expect(parseHookEvent({ ...common, hook_event_name: "PostToolBatch", tool_calls: [{ tool_name: "Bash", tool_input: { command: "echo zg-ask-p > p.txt" }, tool_use_id: "chatcmpl-tool-8f3d87991157ed19", tool_response: "\"zgate 探针:请手动点通过或拒绝\"" }] }))
+      .toEqual({ kind: "PostToolBatch", sessionId: common.session_id, toolUseIds: ["chatcmpl-tool-8f3d87991157ed19"] });
+    expect(parseHookEvent({ session_id: common.session_id, prompt_id: "18cfa92e", transcript_path: "/x", cwd: "/y", hook_event_name: "SessionEnd", reason: "prompt_input_exit" }))
+      .toEqual({ kind: "SessionEnd", sessionId: common.session_id });
   });
 });

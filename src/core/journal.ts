@@ -56,6 +56,19 @@ export const ReplayPolicySchema = PolicyDetailsSchema.extend({
 export type ReplayedPolicy = z.infer<typeof ReplayPolicySchema>;
 
 /**
+ * M4:从 Claude Code 的 hook 输入里抄下来的对账字段(spec-m4 §4,D16.0)。
+ * `tool_use_id` 是把 PreToolUse 的 ask 与之后的 PostToolUse / PostToolUseFailure 对上的唯一钥匙;
+ * `permission_mode` 让 Python 侧分得开"用户点了"与 bypassPermissions / dontAsk 下的自动放行。
+ * 两者都当不透明字符串:id 的形状随后端变(toolu_… / chatcmpl-tool-…),模式名 Claude Code 还会加。
+ */
+export const HookDetailsSchema = z.object({
+  tool_use_id: z.string().min(1),
+  permission_mode: z.string().optional(),
+  prompt_id: z.string().optional(),
+});
+export type HookDetails = z.infer<typeof HookDetailsSchema>;
+
+/**
  * 一条完整的决策行。
  *
  * 字段名一路 snake_case —— 这个 schema 是 §16 说的那道缝:左边是 TS,
@@ -84,6 +97,8 @@ export const JournalLineSchema = z.object({
   model_details: ReplayModelDetailsSchema.optional(),
   // M3:仓库策略在场的决策才有(不管 PASS 还是 SOFT)。同一做法,v 仍是 1(spec-m3 §5,D15.4)
   policy: ReplayPolicySchema.optional(),
+  // M4:经 /hook/claude-code 进来且输入带 tool_use_id 的决策才有;/decide 进来的没有。同一做法,v 仍是 1(spec-m4 §4)
+  hook: HookDetailsSchema.optional(),
 });
 export type JournalLine = z.infer<typeof JournalLineSchema>;
 
@@ -246,6 +261,7 @@ export function record(
   now = new Date(),
   modelDetails: ModelDetails | null = null,
   policy: PolicyDetails | null = null,
+  hook: HookDetails | null = null,
 ): void {
   enqueue(
     {
@@ -260,6 +276,7 @@ export function record(
       outcome: null,
       ...(modelDetails === null ? {} : { model_details: modelDetails }),
       ...(policy === null ? {} : { policy }),
+      ...(hook === null ? {} : { hook }),
     },
     now,
   );
@@ -301,6 +318,8 @@ export interface ReplayedDecision {
   readonly model_details: ReplayedModelDetails | null;
   /** 仓库策略在场才有,否则 null */
   readonly policy: ReplayedPolicy | null;
+  /** 经 Claude Code hook 进来且带 tool_use_id 才有,否则 null */
+  readonly hook: HookDetails | null;
 }
 
 /**
@@ -357,6 +376,7 @@ export function replay(text: string): { entries: ReplayedDecision[]; badLines: n
       ts: d.ts,
       model_details: d.model_details ?? null,
       policy: d.policy ?? null,
+      hook: d.hook ?? null,
     });
     order.push(d.decision_id);
   }
