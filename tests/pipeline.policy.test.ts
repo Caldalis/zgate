@@ -133,6 +133,58 @@ describe("附策略的条件(§1 第 3 条)", () => {
   });
 });
 
+describe("policy.self_write 不问模型(D15.7)", () => {
+  test("★ 配了模型也不问:模型 0 次调用,ask,source rule,没有 model_details", async () => {
+    const dir = repo("scope: migrations/\n");
+    const spy = new SpyBackend("allow");
+    const r = await decideAllAsync(actions("echo 'scope: src/' >> .zgatepolicy", dir), { noCache: true, backend: spy });
+    expect(spy.seen).toHaveLength(0);
+    expect(r.decision.verdict).toBe("ask");
+    expect(r.decision.source).toBe("rule");
+    expect(r.decision.rule_id).toBe("policy.self_write");
+    expect(r.decision.confidence).toBeNull();
+    expect(r.perAction[0]!.modelDetails).toBeNull();
+    expect(r.perAction[0]!.policy?.sha256).toBeDefined();
+  });
+
+  test("Write / Edit 工具写策略文件同样不问模型", async () => {
+    const dir = repo();
+    const spy = new SpyBackend("allow");
+    for (const [tool, input] of [["Write", { file_path: join(dir, POLICY_FILENAME), content: "scope: .\n" }], ["Edit", { file_path: join(dir, POLICY_FILENAME), old_string: "a", new_string: "b" }]] as const) {
+      const r = await decideAllAsync(toActions({ tool_name: tool, tool_input: { ...input }, cwd: dir }, "t"), { noCache: true, backend: spy });
+      expect(r.decision.verdict, tool).toBe("ask");
+      expect(r.decision.source, tool).toBe("rule");
+    }
+    expect(spy.seen).toHaveLength(0);
+  });
+
+  test("没配模型时 source 也是 rule(不是 §3.2 右列的 fallback:这不是降级)", async () => {
+    const r = await decideAllAsync(actions("rm .zgatepolicy", repo("scope: .\n")), { noCache: true });
+    expect(r.decision.verdict).toBe("ask");
+    expect(r.decision.source).toBe("rule");
+  });
+
+  test("结论照常缓存:第二次 source 是 cache,仍是 ask", async () => {
+    const dir = repo();
+    const spy = new SpyBackend("allow");
+    const a = actions("echo x >> .zgatepolicy", dir)[0]!;
+    expect((await decideActionAsync(a, { backend: spy })).source).toBe("rule");
+    const second = await decideActionAsync(a, { backend: spy });
+    expect(second.source).toBe("cache");
+    expect(second.verdict).toBe("ask");
+    expect(spy.seen).toHaveLength(0);
+  });
+
+  test("复合语句:改策略文件的那段直接 ask,后面 scope 命中的段也不再问模型", async () => {
+    const dir = repo("scope: migrations/\n");
+    const spy = new SpyBackend("allow");
+    const r = await decideAllAsync(actions("echo 'scope: src/' > .zgatepolicy && rm -rf ./migrations", dir), { noCache: true, backend: spy });
+    expect(r.decision.verdict).toBe("ask");
+    expect(r.decision.rule_id).toBe("policy.self_write");
+    expect(spy.seen).toHaveLength(0);
+  });
+});
+
 describe("缓存 salt(§2.4)", () => {
   test("无策略时 salt 就是分支名,与 M2 相同:按 branch 能直接查到", async () => {
     const dir = repo();

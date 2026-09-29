@@ -1,5 +1,6 @@
-// spec-m3 §3 —— 策略规则。追加在 RULES 末尾:同档先命中者胜,所以 `policy.scope` 只在没有别的
-// SOFT 命中时成为 rule_id —— 这是"策略文本只在 policy.scope 时进 prompt"(§1 第 3 条)的结构性保证。
+// spec-m3 §3 —— 策略规则。`policy.scope` 在 RULES 末尾:同档先命中者胜,所以它只在没有别的 SOFT 命中时
+// 成为 rule_id —— 这是"策略文本只在 policy.scope 时进 prompt"(§1 第 3 条)的结构性保证。
+// `policy.self_write` 在 RULES 最前且不问模型(D15.7):写策略文件的任何形态都直接问人。
 
 import type { Action } from "../core/action.ts";
 import type { Context } from "../core/context.ts";
@@ -47,13 +48,15 @@ const scopeRule = defineRule({
 
 /**
  * agent 改策略文件:SOFT 不 HARD_DENY —— 让 agent 起草策略是正当场景,策略被改的最坏结果只是回到无策略。
- * pre 轮、独立于 policy.scope,所以它是 rule_id 时策略文本不进 prompt。
+ * 但这条不问模型(skipModel):策略文本按设计不给模型看,零样本模型不知道 `.zgatepolicy` 是权限策略,
+ * 9B 把"往点文件追加一行"当日常放行了(D15.5);全自动模式下 agent 改掉自己的边界再删东西就是两步绕过。
  * 文件名按小写比:macOS 的文件系统不分大小写,`.ZGATEPOLICY` 写的是同一个文件。
  */
 const selfWrite = defineRule({
   id: "policy.self_write",
   stage: "pre",
   verdict: "SOFT",
+  skipModel: true,
   match(action: Action): string | null {
     const candidates = action.verb === "write" || action.verb === "delete" ? action.targets.map((t) => t.raw) : [];
     for (const seg of commandSegments(action)) candidates.push(...redirectDestinations(seg));
@@ -64,4 +67,6 @@ const selfWrite = defineRule({
   },
 });
 
-export const POLICY_RULES: readonly Rule[] = [selfWrite, scopeRule];
+export const POLICY_PRE_RULES: readonly Rule[] = [selfWrite];
+export const POLICY_POST_RULES: readonly Rule[] = [scopeRule];
+export const POLICY_RULES: readonly Rule[] = [...POLICY_PRE_RULES, ...POLICY_POST_RULES];

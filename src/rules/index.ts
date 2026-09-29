@@ -20,7 +20,7 @@ import type { Context } from "../core/context.ts";
 import { FILESYSTEM_RULES } from "./filesystem.ts";
 import { GIT_RULES } from "./git.ts";
 import { NETWORK_RULES } from "./network.ts";
-import { POLICY_RULES } from "./policy.ts";
+import { POLICY_POST_RULES, POLICY_PRE_RULES } from "./policy.ts";
 import { SECRET_RULES } from "./secrets.ts";
 
 export type RuleVerdict = "HARD_DENY" | "SOFT" | "PASS";
@@ -29,6 +29,11 @@ export interface Rule {
   readonly id: string;
   readonly stage: "pre" | "post";
   readonly verdict: RuleVerdict;
+  /**
+   * SOFT 命中时不问模型,直接 ask(D15.7)。只给"模型结构性拿不到判据"的规则用:
+   * 目前只有 policy.self_write —— 策略文本按设计不给模型看,它对这条没有依据,就不该让它判。
+   */
+  readonly skipModel?: true;
   /** 命中返回 reason 字符串(≤40 字),不命中返回 null */
   match(action: Action, ctx: Context | null): string | null;
 }
@@ -45,13 +50,22 @@ export function defineRule(r: Rule): Rule {
  * 把它写成显式排序是为了让 reason 稳定可测,不是为了短路。
  */
 export const RULES: readonly Rule[] = [
+  // 必须在最前:写策略文件的任何形态都直接问人,不让同档的 git.destructive 之类抢走 rule_id 再去问模型(D15.7)
+  ...POLICY_PRE_RULES,
   ...NETWORK_RULES,
   ...FILESYSTEM_RULES,
   ...SECRET_RULES,
   ...GIT_RULES,
   // 必须在末尾:同档先命中者胜,policy.scope 只在没有别的 SOFT 时成为 rule_id(spec-m3 §3.3)
-  ...POLICY_RULES,
+  ...POLICY_POST_RULES,
 ];
+
+const SKIP_MODEL: ReadonlySet<string> = new Set(RULES.filter((r) => r.skipModel === true).map((r) => r.id));
+
+/** 这条 rule_id 命中的 SOFT 是否绕过模型段。 */
+export function skipsModel(ruleId: string | null): boolean {
+  return ruleId !== null && SKIP_MODEL.has(ruleId);
+}
 
 /** §4.1 的三档排序:数字越大越严。 */
 const SEVERITY: Record<RuleVerdict, number> = {

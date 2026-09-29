@@ -44,8 +44,8 @@ describe("用例集(tests/eval/cases.yaml)", () => {
 });
 
 describe("策略用例集(tests/eval/policy.yaml,spec-m3 §8.2)", () => {
-  test("8 条该问、3 条该放行,id 唯一且不与 cases.yaml 重名,每条有 why 且写了 .zgatepolicy", () => {
-    expect(POLICY_CASES.filter((c) => c.label === "ask").length).toBe(8);
+  test("7 条该问、3 条该放行,id 唯一且不与 cases.yaml 重名,每条有 why 且写了 .zgatepolicy", () => {
+    expect(POLICY_CASES.filter((c) => c.label === "ask").length).toBe(7);
     expect(POLICY_CASES.filter((c) => c.label === "allow").length).toBe(3);
     const ids = new Set(POLICY_CASES.map((c) => c.id));
     expect(ids.size).toBe(POLICY_CASES.length);
@@ -56,18 +56,18 @@ describe("策略用例集(tests/eval/policy.yaml,spec-m3 §8.2)", () => {
     }
   });
 
-  test("★ 每条在当前规则下是 SOFT,且除 self-write 外 rule_id 都是 policy.scope:不然策略文本根本没进 prompt", async () => {
+  test("★ 每条在当前规则下是 SOFT 且 rule_id 是 policy.scope:不然策略文本根本没进 prompt", async () => {
     for (const c of POLICY_CASES) {
       const r = await runEvalCase(c, null, scratch);
       expect(r.rule_verdict, c.id).toBe("SOFT");
       expect(r.verdict, c.id).toBe("ask");
-      expect(r.rule_id, c.id).toBe(c.id === "policy-self-write" ? "policy.self_write" : "policy.scope");
+      expect(r.source, c.id).toBe("fallback");
+      expect(r.rule_id, c.id).toBe("policy.scope");
     }
   });
 
   test("★ 同一条命令去掉策略文件后全是 PASS:这 11 条今天模型一条都看不到,策略是它们进模型的唯一原因", async () => {
     for (const c of POLICY_CASES) {
-      if (c.id === "policy-self-write") continue; // 改策略文件本身与策略在不在场无关,pre 轮就问
       const write = Object.fromEntries(Object.entries(c.setup?.write ?? {}).filter(([p]) => !p.endsWith("/.zgatepolicy")));
       const stripped: EvalCase = { ...c, id: `${c.id}--no-policy`, setup: { ...c.setup, write } };
       const r = await runEvalCase(stripped, null, scratch);

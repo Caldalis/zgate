@@ -26,7 +26,7 @@ import {
 import { enrich } from "../enrichers/index.ts";
 import { gitFacts } from "../enrichers/git.ts";
 import { loadPolicy, policyDetails, type Policy, type PolicyDetails } from "../policy.ts";
-import { evaluate, type RuleHit, type RuleVerdict } from "../rules/index.ts";
+import { evaluate, skipsModel, type RuleHit, type RuleVerdict } from "../rules/index.ts";
 import { scopeHits } from "../rules/policy.ts";
 
 export interface PipelineOptions {
@@ -127,9 +127,10 @@ function computeStage(action: Action, opts: PipelineOptions, salt: string, polic
   return { hit, context, cached: false, model: null, ...policyOf(context, action, policy), salt, elapsedMs: performance.now() - started };
 }
 
-/** 模型这一段的结果:没问 / 有结论 / 问了但失败。 */
+/** 模型这一段的结果:没问 / 规则说了不问 / 有结论 / 问了但失败。 */
 type ModelOutcome =
   | { readonly kind: "none" }
+  | { readonly kind: "skipped" }
   | { readonly kind: "decision"; readonly decision: ModelDecision; readonly cached: boolean }
   | { readonly kind: "failed"; readonly cause: string; readonly details: ModelDetails };
 
@@ -170,6 +171,17 @@ function assemble(stage: RuleStage, outcome: ModelOutcome, modelMs: number, newI
     };
   }
 
+  if (hit.verdict === "SOFT" && outcome.kind === "skipped") {
+    // 规则自己说了不问模型(skipModel,D15.7):这不是降级,是规则层的结论,source 记 rule
+    return {
+      decision: { ...base, verdict: "ask", reason: hit.reason, source: stage.cached ? "cache" : "rule", confidence: null },
+      context: stage.context,
+      ruleVerdict: hit.verdict,
+      modelDetails: null,
+      policy,
+    };
+  }
+
   if (hit.verdict === "SOFT" && outcome.kind === "failed") {
     // §3.2 / §5.4:模型超时或不可达,降级到 ask。理由仍是规则的那句,
     // 用户要看的是"为什么问",括号里补一句降级原因。
@@ -198,9 +210,15 @@ function assemble(stage: RuleStage, outcome: ModelOutcome, modelMs: number, newI
   };
 }
 
+/** 不进模型段时的 outcome:标了 skipModel 的 SOFT 是 skipped,其余是 none。 */
+function withoutModel(stage: RuleStage): ModelOutcome {
+  return stage.hit.verdict === "SOFT" && skipsModel(stage.hit.rule_id) ? { kind: "skipped" } : { kind: "none" };
+}
+
 /** 同步判一条:只有规则段,不问模型(§3.2 右列)。check / bench / golden 用。 */
 export function decideWithContext(action: Action, opts: PipelineOptions = {}): Decided {
-  return assemble(runRules(action, opts), { kind: "none" }, 0, opts.newId ?? defaultNewId);
+  const stage = runRules(action, opts);
+  return assemble(stage, withoutModel(stage), 0, opts.newId ?? defaultNewId);
 }
 
 export function decideAction(action: Action, opts: PipelineOptions = {}): Decision {
@@ -230,8 +248,8 @@ async function finishStage(
 ): Promise<Decided> {
   const newId = opts.newId ?? defaultNewId;
   const backend = opts.backend ?? null;
-  if (stage.hit.verdict !== "SOFT" || backend === null || !consult) {
-    return assemble(stage, { kind: "none" }, 0, newId);
+  if (stage.hit.verdict !== "SOFT" || backend === null || !consult || skipsModel(stage.hit.rule_id)) {
+    return assemble(stage, withoutModel(stage), 0, newId);
   }
   if (stage.model !== null) {
     return assemble(stage, { kind: "decision", decision: stage.model, cached: true }, 0, newId);
@@ -321,7 +339,7 @@ export function decideAll(actions: readonly Action[], opts: PipelineOptions = {}
     const stage = runRules(action, opts, batch);
     const prior = done.get(stage);
     if (prior !== undefined) return { action, ...reissue(prior, newId) };
-    const decided = assemble(stage, { kind: "none" }, 0, newId);
+    const decided = assemble(stage, withoutModel(stage), 0, newId);
     done.set(stage, decided);
     return { action, ...decided };
   });

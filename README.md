@@ -118,7 +118,7 @@ scope: prod-db.internal
 - `read` 不受 scope 约束:策略保护的是改动,Claude Code 每步都在读。
 - 条目相对仓库根,去掉开头 `./` 与结尾 `/`;`scope: .` 罩住整个仓库。绝对路径、含 `..`、含 `* ? [ {` 的条目忽略并警告,**不做 glob**:网关不遍历目录,`**/*.tfstate` 判不出 `rm -rf infra/` 有没有删到 tfstate,要保护一类文件就写它们所在的目录。
 - 只认 git 仓库根的那一份;文件是软链接当不存在;只读前 4096 字节,超了截断并警告。建议 1KB 以内。
-- agent 改 `.zgatepolicy` 本身会问一次(读不问)。
+- agent 写或删 `.zgatepolicy` 本身一律问用户,不经模型:这条规则故意不把策略文本给模型看,模型没有判据,就不让它判。读不问。
 - 策略文本放在模型 prompt 的稳定前缀里,llama-server 复用缓存,每条调用的边际成本约为零;但每个仓库的**第一条**命中 scope 的调用要处理整段新前缀,大策略可能超过 2 秒的默认超时而降级为 `ask` 一次。
 - 策略一改,3 秒内生效,不用重启 daemon。`zgate check` 会打印一行当前策略的状态与命中的条目。
 
@@ -161,7 +161,7 @@ zgate check "rm -rf ./migrations"                      # ASK  触及策略保护
 | `zgate check <command> [--cwd DIR] [--json] [--model]` | 判一条 Bash 命令,打印裁决、理由与仓库策略状态,不写日志。`--model` 时 `SOFT` 按配置文件走模型 |
 | `zgate journal replay [file]` | 把一天的 JSONL 还原成 `{action, context, decision, outcome}` 数组。评测与训练数据的唯一入口 |
 | `zgate bench [--n N] [--http] [--json]` | 跑 N 次混合请求打印 p50/p95/p99。`--http` 起真 daemon 量端到端 |
-| `zgate eval [--cases FILE] [--json]` | 拿 `tests/eval/cases.yaml`(21 条人工标注的 `SOFT` 样本)跑配置里的模型,打印一致率、该问却放行、误打断与延迟。模型数字的复现入口;`--cases tests/eval/policy.yaml` 是 11 条策略用例 |
+| `zgate eval [--cases FILE] [--json]` | 拿 `tests/eval/cases.yaml`(21 条人工标注的 `SOFT` 样本)跑配置里的模型,打印一致率、该问却放行、误打断与延迟。模型数字的复现入口;`--cases tests/eval/policy.yaml` 是 10 条策略用例 |
 
 HTTP 端点(§8):`POST /hook/claude-code`、`POST /decide`(收 `{action}` 返回 Decision,供其他适配器)、`POST /outcome`(记录用户实际选择)、`GET /healthz`。
 
@@ -184,7 +184,7 @@ HTTP 端点(§8):`POST /hook/claude-code`、`POST /decide`(收 `{action}` 返回
 - `$(…)`、反引号、`eval`、未知工具、解析失败
 - 命令含 `prod` / `production` 且是写或删
 - `git reset --hard`、`git clean -f`、`--no-verify`、强推但分支或默认分支未知、下载后执行
-- 非 `read` 的调用触及 `.zgatepolicy` 的 `scope` 条目(目标在条目内、是条目的祖先、或命令原文含条目字面);写或删 `.zgatepolicy` 本身
+- 非 `read` 的调用触及 `.zgatepolicy` 的 `scope` 条目(目标在条目内、是条目的祖先、或命令原文含条目字面);写或删 `.zgatepolicy` 本身(这一条不问模型,直接问)
 
 **PASS**
 
@@ -218,7 +218,7 @@ HTTP 端点(§8):`POST /hook/claude-code`、`POST /decide`(收 `{action}` 返回
 - 规则结论缓存 60 秒。同一 cwd、同一命令在这个窗口内环境变了(比如目录换成软链接)不会重新探测;换链接这个动作本身会先经过网关并留下日志。
 - 不展开 shell 变量,不读 `bash script.sh` 的脚本内容。`~` 和 `$HOME` 只在敏感目录规则里按字面认,越界判断不展开它们。
 - 不配模型时所有 `SOFT` 都变成 `ask`。配了本地 9B,`zgate eval` 的 21 条人工标注 `SOFT` 样本上 16 条与人工判断一致,0 条该问却放行,5 条多问了一次(`.env.test`、兄弟包的 `dist`、仓库内叫 `production` 的模板目录、`id_rsa.pub`、feature 分支上的强推)。冷调用 p50 约 1.1 秒;同一 prompt 命中 llama-server 缓存时约 0.25 秒。
-- 模型的 prompt 是零样本、固定的。配了本地 9B,`zgate eval --cases tests/eval/policy.yaml` 的 11 条策略样本上 10 条与人工判断一致(禁止项全部问,三条要读懂例外条款的都放行);唯一不一致的是 agent 往 `.zgatepolicy` 追加一行,9B 以 P≈0.6 判放行 —— 这条规则不把策略文本给模型看,零样本的模型不知道这个文件是权限策略。不配模型时它照常问。
+- 模型的 prompt 是零样本、固定的。配了本地 9B,`zgate eval --cases tests/eval/policy.yaml` 的 10 条策略样本全部与人工判断一致(禁止项全部问,三条要读懂例外条款的都放行),每份策略首条调用冷 p50 约 1 秒,前缀缓存后约 0.2 秒。
 - `scope` 的字面匹配会让只提到条目名字、不碰目录的写命令也问一次(`scope: infra` 对 `git commit -m "infra docs"`);真碰目录的路径匹配本来就命中,多出来的很少。
 - 配置文件是严格 JSON,不支持注释;改了要重启 daemon。
 
@@ -245,6 +245,6 @@ bun run typecheck   # tsc --noEmit,strict
 - JSONL journal 与 `journal replay`;`/outcome` 补丁行;模型参与的行带 `model_details` 与 `confidence`
 - `zgate check` 一键验证(`--model` 走真实模型),`zgate bench` 进程内与 HTTP 端到端两种模式
 - `zgate eval`:21 条人工标注的 `SOFT` 样本集(`tests/eval/cases.yaml`,与 golden 同一套环境描述)整批过模型,输出一致率、该问却放行、误打断与延迟
-- 仓库策略 `.zgatepolicy`:自然语言 + `scope:` 行,只认 git 仓库根,软链接当不存在,只读前 4KB,3 秒缓存;`scope` 命中的非 read 调用升 `SOFT`,策略文本进模型 prompt 的稳定前缀;写策略文件本身要问
+- 仓库策略 `.zgatepolicy`:自然语言 + `scope:` 行,只认 git 仓库根,软链接当不存在,只读前 4KB,3 秒缓存;`scope` 命中的非 read 调用升 `SOFT`,策略文本进模型 prompt 的稳定前缀;写策略文件本身直接问用户、不问模型
 - 策略只能收紧:不产生 deny、不放宽规则,策略文本只在 `policy.scope` 是唯一理由时进 prompt,没有策略时 prompt 与日志与 M2 逐字节相同
-- journal 可选的 `policy` 字段(路径、sha256、大小、命中的条目);`zgate check` 打印策略状态;`tests/eval/policy.yaml` 11 条策略评测用例
+- journal 可选的 `policy` 字段(路径、sha256、大小、命中的条目);`zgate check` 打印策略状态;`tests/eval/policy.yaml` 10 条策略评测用例

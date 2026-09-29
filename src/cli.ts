@@ -50,7 +50,7 @@ const USAGE = `zgate ${VERSION} — 本地 Agent 工具调用决策网关
   zgate eval [--cases FILE] [--json]
       拿 tests/eval/cases.yaml(21 条人工标注的 SOFT 样本)跑一遍配置里的模型,
       打印一致率、该问却放行、误打断与延迟。这是 M2 数字的复现入口;
-      --cases tests/eval/policy.yaml 是 M3 的 11 条策略用例。
+      --cases tests/eval/policy.yaml 是 M3 的 10 条策略用例。
 
   zgate bench [--n N] [--json] [--http]
       跑 N 次混合请求,打印 p50/p95/p99。默认量进程内管线;

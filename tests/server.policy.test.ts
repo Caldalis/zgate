@@ -103,6 +103,14 @@ describe("hook 端到端(没配模型:SOFT 一律 ask)", () => {
     expect("policy" in lastLine()).toBe(false);
   });
 
+  test("agent 改策略文件:hook 回 ask,日志 source rule、没有 model_details(D15.7)", async () => {
+    expect(await hook("echo 'scope: src/' >> .zgatepolicy", repo)).toBe("ask");
+    const rec = lastLine();
+    expect(rec["decision"]["rule_id"]).toBe("policy.self_write");
+    expect(rec["decision"]["source"]).toBe("rule");
+    expect("model_details" in rec).toBe(false);
+  });
+
   test("replay 带回 policy;/decide 也记 policy", async () => {
     const res = await fetch(`${base}/decide`, {
       method: "POST",

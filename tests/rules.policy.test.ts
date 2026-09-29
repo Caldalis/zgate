@@ -63,8 +63,11 @@ function hitsFor(tool: string, input: Record<string, unknown>, cwd: string): str
 }
 
 describe("注册表", () => {
-  test("两条策略规则在 RULES 末尾:同档先命中者胜,是 §3.3 不变量的一半", () => {
-    expect(RULES.slice(-2).map((r) => r.id)).toEqual(["policy.self_write", "policy.scope"]);
+  test("policy.scope 在 RULES 末尾(同档先命中者胜,§3.3 不变量的一半);policy.self_write 在最前且不问模型(D15.7)", () => {
+    expect(RULES.at(-1)!.id).toBe("policy.scope");
+    expect(RULES[0]!.id).toBe("policy.self_write");
+    expect(RULES[0]!.skipModel).toBe(true);
+    expect(RULES.filter((r) => r.skipModel === true).map((r) => r.id)).toEqual(["policy.self_write"]);
     expect(POLICY_RULES.map((r) => `${r.stage}/${r.verdict}`)).toEqual(["pre/SOFT", "post/SOFT"]);
   });
 });
@@ -192,6 +195,19 @@ describe("policy.self_write(pre SOFT)", () => {
   test("pre 轮不看环境:不在仓库里也一样问", () => {
     const r = bash("echo x > .zgatepolicy", repo(undefined, {}, false));
     expect(r.decision.rule_id).toBe("policy.self_write");
+  });
+
+  test("★ 与别的 pre SOFT 同时命中时 self_write 胜(排在 RULES 最前):git checkout -- / 命令里带凭据", () => {
+    const dir = repo("scope: .\n", MIG);
+    expect(bash("git checkout -- .zgatepolicy", dir).decision.rule_id).toBe("policy.self_write");
+    expect(bash("echo AKIAABCDEFGHIJKLMNOP > .zgatepolicy", dir).decision.rule_id).toBe("policy.self_write");
+  });
+
+  test("不问模型:同步入口的 source 是 rule 不是 fallback", () => {
+    const r = bash("echo x >> .zgatepolicy", repo(undefined, MIG));
+    expect(r.decision.verdict).toBe("ask");
+    expect(r.decision.source).toBe("rule");
+    expect(r.decision.confidence).toBeNull();
   });
 
   test("同名但不是这个文件不问:.zgatepolicy.bak / policy.md", () => {
