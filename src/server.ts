@@ -3,9 +3,11 @@
 // `Bun.serve()` 监听 127.0.0.1:8787,只绑 loopback。
 //
 // 四个端点,职责分得很清楚:
-//   /hook/claude-code  Claude Code 的 PreToolUse 钩子入口(§10 的格式转换)
+//   /hook/claude-code  Claude Code 的钩子入口。PreToolUse 走 §10 的格式转换与裁决;
+//                      PostToolUse / PostToolUseFailure / PostToolBatch / SessionEnd 只旁观:
+//                      查悬着表、写 outcome 补丁、回 {}(spec-m4 §2,D16.0)
 //   /decide            通用入口,供测试和其他适配器用(收 Action,返回 Decision)
-//   /outcome           M4 数据飞轮的入口。M1 只负责追加进日志,不做分析
+//   /outcome           M4 数据飞轮的入口。追加进日志,不做分析;钩子推出来的 outcome 与它同一入口
 //   /healthz           存活检查
 //
 // 关于 `/hook/claude-code` 有一条必须写下来的行为:**它永远返回 200**。
@@ -24,7 +26,8 @@ import type { Decision } from "./core/decision.ts";
 import { OutcomeSchema, record, recordOutcome, startJournal, shutdownJournal, journalStats, type Outcome } from "./core/journal.ts";
 import type { ModelBackend } from "./core/model.ts";
 import { decideAllAsync, type PipelineOptions } from "./core/pipeline.ts";
-import { parseHookInput, toActions, toHookResponse, type HookResponse } from "./adapters/claude-code.ts";
+import { hookDetails, parseHookEvent, toActions, toHookResponse, type HookEvent, type HookInput, type HookResponse } from "./adapters/claude-code.ts";
+import { PendingAsks } from "./core/pending.ts";
 
 /** §8:默认 8787,只绑 loopback。 */
 export const DEFAULT_PORT = 8787;
@@ -131,12 +134,12 @@ async function handleDecide(req: Request, opts: PipelineOptions): Promise<Respon
 }
 
 /**
- * §10 的 `/hook/claude-code`。
+ * §10 的 `/hook/claude-code`。按 `hook_event_name` 分派(spec-m4 §2):
+ * PreToolUse 走裁决;其余事件网关只是旁观者,永远回 `{}`。
  *
- * 流程:解析 hook 输入 → 适配成 Action[] → 逐条判 → 取最严 → 转成
- * hook 响应。**任何一步失败都回"不表态"**,理由见文件顶部。
+ * body 不是 JSON 时回"不表态"的 ask:认不出是哪种事件,只能按最坏的(PreToolUse)处理。
  */
-async function handleHook(req: Request, opts: PipelineOptions): Promise<Response> {
+async function handleHook(req: Request, opts: PipelineOptions, pending: PendingAsks): Promise<Response> {
   let body: unknown;
   try {
     body = await req.json();
@@ -144,11 +147,67 @@ async function handleHook(req: Request, opts: PipelineOptions): Promise<Response
     return json(neutralResponse("网关无法解析本次请求"));
   }
 
-  const input = parseHookInput(body);
-  if (input === null) {
+  const event = parseHookEvent(body);
+  if (event === null) {
     return json(neutralResponse("网关无法识别本次调用"));
   }
+  if (event.kind !== "PreToolUse") return json(observe(event, pending));
+  return handlePreToolUse(event.input, opts, pending);
+}
 
+function sessionOf(id: string | null | undefined): string {
+  return typeof id === "string" ? id : "";
+}
+
+/**
+ * M4:Post 类事件。只查悬着表、写 §9 的补丁行,不改任何行为(spec-m4 §1 第 4 条)。
+ *
+ *   PostToolUse / PostToolUseFailure  工具真的执行了 ⇒ 悬着的 ask 是被用户点通过的:approved,tool_succeeded 看是哪个事件
+ *   PostToolBatch                    批里仍悬着的 id 没来过 Post 事件 ⇒ 没执行就落定了(`-p` 自动拒绝、deny 规则先拦):unknown(D16.0)
+ *   SessionEnd                       该 session 剩下的全部 unknown
+ *
+ * 任何异常也回 `{}`:这些事件没有裁决可言,回 ask 反而是错的形状。
+ */
+function observe(event: Exclude<HookEvent, { kind: "PreToolUse" }>, pending: PendingAsks): Record<string, never> {
+  try {
+    const now = new Date();
+    const unknown: Outcome = { user_action: "unknown", tool_succeeded: null };
+    switch (event.kind) {
+      case "PostToolUse":
+      case "PostToolUseFailure": {
+        const ids = pending.take(sessionOf(event.sessionId), event.toolUseId);
+        if (ids !== null) {
+          const outcome: Outcome = { user_action: "approved", tool_succeeded: event.kind === "PostToolUse" };
+          for (const id of ids) recordOutcome(id, outcome, now);
+        }
+        break;
+      }
+      case "PostToolBatch": {
+        for (const toolUseId of event.toolUseIds) {
+          const ids = pending.take(sessionOf(event.sessionId), toolUseId);
+          if (ids !== null) for (const id of ids) recordOutcome(id, unknown, now);
+        }
+        break;
+      }
+      case "SessionEnd": {
+        for (const id of pending.drain(sessionOf(event.sessionId))) recordOutcome(id, unknown, now);
+        break;
+      }
+      case "other":
+        break;
+    }
+  } catch {
+    // 旁观者不表态
+  }
+  return {};
+}
+
+/**
+ * PreToolUse:解析 hook 输入 → 适配成 Action[] → 逐条判 → 取最严 → 转成 hook 响应。
+ * **任何一步失败都回"不表态"**,理由见文件顶部。M4 只多做两件事:journal 行带 `hook`,
+ * 整体结论是 ask 时把这批里判 ask 的行挂进悬着表 —— 响应本身与 M3 逐字节相同(spec-m4 §1 第 1 条)。
+ */
+async function handlePreToolUse(input: HookInput, opts: PipelineOptions, pending: PendingAsks): Promise<Response> {
   // turn_id 由网关生成(§2.1),一次 hook 请求一个。
   const turnId = crypto.randomUUID();
 
@@ -173,8 +232,14 @@ async function handleHook(req: Request, opts: PipelineOptions): Promise<Response
     // §9:每条 Action 各记一行,带上判它时看到的 Context 与 model_details。
     // 整体结论不单独记:它没有自己的 Action,hook 响应也带不回 decision_id。见 D11.2。
     const now = new Date();
+    const hook = hookDetails(input);
     for (const { action, context, decision, modelDetails, policy } of result.perAction) {
-      record(action, context, decision, now, modelDetails, policy);
+      record(action, context, decision, now, modelDetails, policy, hook);
+    }
+    // M4:问了的这批里,只有判 ask 的那些行等着 Post 事件来对(allow 的行没被问过,D16.1)。
+    if (hook !== null && result.decision.verdict === "ask") {
+      const asked = result.perAction.filter((p) => p.decision.verdict === "ask").map((p) => p.decision.decision_id);
+      pending.put(sessionOf(input.session_id), hook.tool_use_id, asked);
     }
     return json(toHookResponse(result.decision));
   } catch {
@@ -225,6 +290,8 @@ function handleHealthz(config: ServerConfig): Response {
 /** 建 server。`cli.ts` 和测试都用这个,不直接调 `Bun.serve`。 */
 export function createServer(config: ServerConfig = defaultConfig()) {
   startJournal();
+  // M4:悬着的 ask 表,一个 daemon 一张;重启即丢(spec-m4 §0 第 5 项)
+  const pending = new PendingAsks();
 
   const opts: PipelineOptions = {
     backend: config.backend,
@@ -249,7 +316,7 @@ export function createServer(config: ServerConfig = defaultConfig()) {
         return req.method === "POST" ? handleDecide(req, opts) : json({ error: "只支持 POST" }, 405);
       }
       if (path === "/hook/claude-code") {
-        return req.method === "POST" ? handleHook(req, opts) : json({ error: "只支持 POST" }, 405);
+        return req.method === "POST" ? handleHook(req, opts, pending) : json({ error: "只支持 POST" }, 405);
       }
       if (path === "/outcome") {
         return req.method === "POST" ? handleOutcome(req) : json({ error: "只支持 POST" }, 405);
