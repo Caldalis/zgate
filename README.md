@@ -77,6 +77,8 @@ zgate 只发 HTTP,不启动、不管理 llama-server。请求走 `/v1/chat/compl
 
 `provider` 为 `"openai"` 时打 `<base_url>/v1/chat/completions`,`base_url` 可指向 Groq / DeepSeek / 自建服务(包括本机的 llama-server)。云端没有 grammar,所以用两家各自的结构化输出(Anthropic 的 `output_config.format`、OpenAI 的 `response_format: json_schema`)让服务端只回 `{"verdict": "allow"}` 或 `{"verdict": "ask"}`;回复必须恰好是这一个 JSON 对象,否则算格式错误,重新生成,最多 5 次,超过就降级为 `ask`。云端不算置信度(`confidence` 为 null);5xx 与网络错误重试一次,4xx / 429 不重试。
 
+Anthropic 这条路按官方文档实现并用 mock 测过,OpenAI 兼容路径用本机 llama-server 验过;**真实的 Anthropic 接口尚未跑过**(开发机没有密钥)。字段若对不上,表现是格式错误、降级为 `ask`,方向安全。验证办法:设好 `ANTHROPIC_API_KEY`,用云端配置跑一次 `zgate eval`,约二十次调用,几分钱。
+
 **chain**(本地优先,不确定时升级云端):
 
 ```json
