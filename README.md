@@ -4,7 +4,7 @@
 
 它解决的问题:正则规则只认字符串,`rm -rf ./build` 永远"安全",哪怕 `build` 是指向生产目录的软链接;云端模型能懂语义,但一次一两秒,一个 session 几百次调用。zgate 跑在本地,先用规则层认死的危险模式(1 毫秒,不可推翻),再用环境探针(真实路径、软链接、git 分支)把"同一条命令在不同环境里风险不同"这件事判出来。
 
-当前是 **M3:规则层 + 可选的模型层 + 仓库策略**。规则层判 `SOFT`(拿不准)的调用可以交给一个本地或云端模型再判一次;不配模型就和 M1 一样,`SOFT` 一律问用户。仓库根放一个自然语言的 `.zgatepolicy`("不要动 migrations/ 下的任何文件"),它保护范围内的改动会被送到模型面前,由模型按策略判。
+当前是 **M4:规则层 + 可选的模型层 + 仓库策略 + 结果信号**。规则层判 `SOFT`(拿不准)的调用可以交给一个本地或云端模型再判一次;不配模型就和 M1 一样,`SOFT` 一律问用户。仓库根放一个自然语言的 `.zgatepolicy`("不要动 migrations/ 下的任何文件"),它保护范围内的改动会被送到模型面前,由模型按策略判。网关说"问一下"、用户在确认框里点了通过,Claude Code 之后的 `PostToolUse` 事件会被对回那次 `ask`,记成一条 outcome —— 跑一段时间,日志里就躺着一份"网关判过头了多少"的免费标注。
 
 ## 安装
 
@@ -33,20 +33,21 @@ bun build --compile src/cli.ts --outfile zgate
    zgate serve
    ```
 
-2. 把下面这段加进 Claude Code 的 `~/.claude/settings.json`(全局)或项目的 `.claude/settings.json`。`zgate serve` 启动时也会把这段打印出来。
+2. 把下面这段加进 Claude Code 的 `~/.claude/settings.json`(全局)或项目的 `.claude/settings.json`。`zgate serve` 启动时也会把这段打印出来。五种事件指向同一个 URL,zgate 按 `hook_event_name` 分派;只配 `PreToolUse` 也能拦,但拿不到结果信号。
 
    ```json
    {
      "hooks": {
-       "PreToolUse": [
-         { "matcher": "",
-           "hooks": [{ "type": "http",
-                       "url": "http://127.0.0.1:8787/hook/claude-code",
-                       "timeout": 5 }] }
-       ]
+       "PreToolUse":         [{ "matcher": "", "hooks": [{ "type": "http", "url": "http://127.0.0.1:8787/hook/claude-code", "timeout": 5 }] }],
+       "PostToolUse":        [{ "matcher": "", "hooks": [{ "type": "http", "url": "http://127.0.0.1:8787/hook/claude-code", "timeout": 5 }] }],
+       "PostToolUseFailure": [{ "matcher": "", "hooks": [{ "type": "http", "url": "http://127.0.0.1:8787/hook/claude-code", "timeout": 5 }] }],
+       "PostToolBatch":      [{ "hooks": [{ "type": "http", "url": "http://127.0.0.1:8787/hook/claude-code", "timeout": 5 }] }],
+       "SessionEnd":         [{ "hooks": [{ "type": "http", "url": "http://127.0.0.1:8787/hook/claude-code", "timeout": 5 }] }]
      }
    }
    ```
+
+   `PreToolUse` 之外的四种事件 zgate 只旁观:不 `block`、不加 `additionalContext`、不改工具输出,一律回 `{}`。
 
 hook 超时或 daemon 没起时,Claude Code 走它自己原本的权限流程,不会因为 zgate 不在而卡住。zgate 自己内部出错时回 `ask`,同样是"没装网关时的行为"。
 
@@ -164,10 +165,11 @@ zgate check "rm -rf ./migrations"                      # ASK  触及策略保护
 | `zgate serve [--port N] [--host H]` | 起 daemon |
 | `zgate check <command> [--cwd DIR] [--json] [--model]` | 判一条 Bash 命令,打印裁决、理由与仓库策略状态,不写日志。`--model` 时 `SOFT` 按配置文件走模型 |
 | `zgate journal replay [file]` | 把一天的 JSONL 还原成 `{action, context, decision, outcome}` 数组。评测与训练数据的唯一入口 |
+| `zgate journal stats [file] [--json]` | 数一天的日志:问了多少次、多少被点通过,按 `rule_id × source` 分组。看结果信号有没有接上 |
 | `zgate bench [--n N] [--http] [--json]` | 跑 N 次混合请求打印 p50/p95/p99。`--http` 起真 daemon 量端到端 |
 | `zgate eval [--cases FILE] [--json]` | 拿 `tests/eval/cases.yaml`(21 条人工标注的 `SOFT` 样本)跑配置里的模型,打印一致率、该问却放行、误打断与延迟。模型数字的复现入口;`--cases tests/eval/policy.yaml` 是 10 条策略用例 |
 
-HTTP 端点(§8):`POST /hook/claude-code`、`POST /decide`(收 `{action}` 返回 Decision,供其他适配器)、`POST /outcome`(记录用户实际选择)、`GET /healthz`。
+HTTP 端点(§8):`POST /hook/claude-code`(PreToolUse 裁决;PostToolUse / PostToolUseFailure / PostToolBatch / SessionEnd 只写 outcome)、`POST /decide`(收 `{action}` 返回 Decision,供其他适配器)、`POST /outcome`(外部记录用户实际选择,与钩子推出来的 outcome 同一入口)、`GET /healthz`。
 
 ## 决策规则
 
@@ -201,7 +203,23 @@ HTTP 端点(§8):`POST /hook/claude-code`、`POST /decide`(收 `{action}` 返回
 
 ## 日志
 
-每条决策一行 JSONL,写到 `~/.zgate/journal/YYYY-MM-DD.jsonl`(配置文件的 `journal_path` 或 `ZGATE_JOURNAL_DIR` 覆盖)。每行含 `v: 1`、完整的 Action、探针产出的 Context(目标真实路径、是否软链接、是否在 cwd/仓库内、git 分支、白名单环境变量)和 Decision。模型参与过的行多一个 `model_details`(后端、模型名、本地/云端各自的延迟、chain 是否升级、降级原因),`decision.confidence` 是 P(裁决)。仓库有 `.zgatepolicy` 时多一个 `policy`(路径、sha256、大小、是否截断、命中的 scope 条目),策略原文不进日志。`/outcome` 到达后追加一条 `patch` 行,不原地改写。写入走内存队列后台批量 flush,不在决策路径上。
+每条决策一行 JSONL,写到 `~/.zgate/journal/YYYY-MM-DD.jsonl`(配置文件的 `journal_path` 或 `ZGATE_JOURNAL_DIR` 覆盖)。每行含 `v: 1`、完整的 Action、探针产出的 Context(目标真实路径、是否软链接、是否在 cwd/仓库内、git 分支、白名单环境变量)和 Decision。模型参与过的行多一个 `model_details`(后端、模型名、本地/云端各自的延迟、chain 是否升级、降级原因),`decision.confidence` 是 P(裁决)。仓库有 `.zgatepolicy` 时多一个 `policy`(路径、sha256、大小、是否截断、命中的 scope 条目),策略原文不进日志。经 Claude Code 钩子进来的行多一个 `hook`(`tool_use_id`、`permission_mode`、`prompt_id`);`/decide` 进来的没有。outcome 到达后追加一条 `patch` 行,不原地改写。写入走内存队列后台批量 flush,不在决策路径上。
+
+## 结果信号(outcome)
+
+Claude Code 不回传用户在确认框里点了什么,但工具**真的执行了**之后会发 `PostToolUse`(成功)或 `PostToolUseFailure`(失败),带着与 `PreToolUse` 相同的 `tool_use_id`。zgate 把每次判 `ask` 的调用按 `(session_id, tool_use_id)` 悬着,等这两个事件来对:
+
+| 之后发生了什么 | 补丁里的 outcome | 含义 |
+|---|---|---|
+| `PostToolUse` | `approved / true` | 用户点了通过,工具跑成了 |
+| `PostToolUseFailure` | `approved / false` | 用户点了通过,工具自己失败 |
+| `PostToolBatch` 里出现这个 id,而它没来过上面两个事件 | `unknown / null` | 没执行就落定了:`claude -p` 无人值守时 `ask` 被自动拒绝,或 deny 规则先拦 |
+| `SessionEnd` 时仍悬着 | `unknown / null` | 会话结束时还没通过(用户点了拒绝、Esc,或框一直没答) |
+| 什么都没来 | 仍是 `null` | daemon 重启、悬了超过 30 分钟、老版本 Claude Code 没有 `tool_use_id` |
+
+用户在确认框里点**拒绝**时 Claude Code 不发任何事件(整轮被打断),所以 v1 **不写 `rejected`**,不猜。复合语句的几行共用一个 `tool_use_id`,补丁只落在判 `ask` 的那几行上。悬着表在内存里(TTL 30 分钟、上限一万条),不落盘。
+
+哪些行能当"网关判过头了"的标注,由读日志的一方决定:`decision.verdict == "ask"` 且 `outcome.user_action == "approved"` 是候选;`hook.permission_mode` 为 `bypassPermissions` / `dontAsk` 的行用户并没有点过,要剔掉;`-p` 无人值守的 session 在 `permission_mode` 上与交互式一样是 `default`,只能按 session 过滤(它们的 `ask` 全是 `unknown`)。`zgate journal stats` 打印"问了多少、多少被点通过"的计数;更深的分析留在 Python,接口是 `zgate journal replay` 的 JSON。
 
 环境变量只采集 `CI`、`GIT_DIR`、`VIRTUAL_ENV` 的存在性和 `TERM_PROGRAM`,其余一律不进日志。
 
@@ -228,11 +246,12 @@ HTTP 端点(§8):`POST /hook/claude-code`、`POST /decide`(收 `{action}` 返回
 - 模型的 prompt 是零样本、固定的。配了本地 9B,`zgate eval --cases tests/eval/policy.yaml` 的 10 条策略样本全部与人工判断一致(禁止项全部问,三条要读懂例外条款的都放行),每份策略首条调用冷 p50 约 1 秒,前缀缓存后约 0.2 秒。
 - `scope` 的字面匹配会让只提到条目名字、不碰目录的写命令也问一次(`scope: infra` 对 `git commit -m "infra docs"`);真碰目录的路径匹配本来就命中,多出来的很少。
 - 配置文件是严格 JSON,不支持注释;改了要重启 daemon。
+- 结果信号只认"工具真的执行了":用户点拒绝、Esc、`-p` 自动拒绝一律记 `unknown`,不区分;daemon 重启会丢掉悬着的 `ask`(outcome 留 `null`)。`SessionEnd` 钩子默认预算 1.5 秒,片段里的 `timeout: 5` 把它提到 5 秒;`claude -p` 以 `--max-turns` 结束时 `SessionEnd` 可能不来,靠 `PostToolBatch` 兜底。
 
 ## 开发
 
 ```sh
-bun test            # 1087 个测试,含 tests/golden/cases.yaml 的 83 条 golden 用例;模型层用 mock server,不需要真实模型
+bun test            # 1159 个测试,含 tests/golden/cases.yaml 的 83 条 golden 用例;模型层用 mock server,不需要真实模型
 bun run typecheck   # tsc --noEmit,strict
 ```
 
@@ -257,3 +276,6 @@ bun run typecheck   # tsc --noEmit,strict
 - journal 可选的 `policy` 字段(路径、sha256、大小、命中的条目);`zgate check` 打印策略状态;`tests/eval/policy.yaml` 10 条策略评测用例
 - 规则层认"命令本身就是对外部系统的破坏":数据库 DDL 与重置、基础设施与云资源删除、发布部署、远程执行破坏命令与传输密钥文件、系统级操作、整份导出环境变量;删 / 写目标含未展开变量或 `~`、`rm` 目标来自 stdin 一律问
 - 适配器认全当前 Claude Code 的工具名:无动作的内部工具跳过,Monitor 按 Bash 解析,MultiEdit 按写处理,MCP 工具 `ask` 并写清 server
+- 结果信号:`/hook/claude-code` 按 `hook_event_name` 分派,`PostToolUse` / `PostToolUseFailure` 对回悬着的 `ask` 写 `approved`,`PostToolBatch` / `SessionEnd` 把没执行就落定的写 `unknown`;旁观事件一律回 `{}`,PreToolUse 的响应逐字节不变
+- journal 可选的 `hook` 字段(`tool_use_id`、`permission_mode`、`prompt_id`);内存悬着表(按 session × tool_use_id,TTL 30 分钟、上限一万);`zgate serve` 打印五段 settings 片段
+- `zgate journal stats`:按 `rule_id × source` 数问了多少、多少被点通过、多少 unknown、多少没结果

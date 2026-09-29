@@ -2,6 +2,7 @@
 //
 //   zgate serve             起 daemon
 //   zgate journal replay    把 JSONL 还原成可评测的结构
+//   zgate journal stats     问了多少、多少被点通过(spec-m4 §0 第 7 项)
 //   zgate bench             跑 p50/p95/p99
 //   zgate check             判一次,把结论打出来(调试与一分钟验证用)
 //
@@ -20,6 +21,7 @@ import { join } from "node:path";
 import { parseCommand } from "./shell/index.ts";
 import { ActionSchema, type Action } from "./core/action.ts";
 import { configureJournalDir, record, replayFile, flushJournal, journalDir, journalFileFor, shutdownJournal } from "./core/journal.ts";
+import { outcomeStats } from "./core/stats.ts";
 import type { ModelBackend } from "./core/model.ts";
 import { decideAction, decideWithContextAsync, type Decided } from "./core/pipeline.ts";
 import { clearCache } from "./core/cache.ts";
@@ -43,9 +45,12 @@ const USAGE = `zgate ${VERSION} — 本地 Agent 工具调用决策网关
       --model 时规则层判 SOFT 的会按配置文件走一次模型。
       例:zgate check "rm -rf ./build"
 
-  zgate journal replay <file>
+  zgate journal replay [file]
       把一天的 JSONL 还原成 {action, context, decision, outcome} 数组。
       不给文件名时用今天的。这是 M2 评测与 M4 训练数据的唯一入口。
+
+  zgate journal stats [file] [--json]
+      数一天的日志:问了多少次、多少被点通过(按 rule_id × source),看结果信号有没有接上。
 
   zgate eval [--cases FILE] [--json]
       拿 tests/eval/cases.yaml(21 条人工标注的 SOFT 样本)跑一遍配置里的模型,
@@ -136,30 +141,29 @@ function cmdServe(args: Args): number {
   console.log(`配置文件:${configPath()}`);
   console.log(`backend:${describeBackend(config.backend)}`);
   console.log("");
-  console.log("把这段加进 Claude Code 的 settings.json 即可接入:");
-  console.log(
-    JSON.stringify(
-      {
-        hooks: {
-          PreToolUse: [
-            {
-              matcher: "",
-              hooks: [
-                {
-                  type: "http",
-                  url: `http://${config.host}:${server.port}/hook/claude-code`,
-                  timeout: 5,
-                },
-              ],
-            },
-          ],
-        },
-      },
-      null,
-      2,
-    ),
-  );
+  console.log("把这段加进 Claude Code 的 settings.json 即可接入(五段同一个 URL;只配 PreToolUse 也能拦,但没有结果信号):");
+  console.log(JSON.stringify(hookSettingsSnippet(config.host, server.port ?? config.port), null, 2));
   return 0;
+}
+
+/**
+ * Claude Code settings 片段(spec-m4 §0 第 6 项)。五种事件同一个 URL,server 按 hook_event_name 分派。
+ * 工具类事件带 `matcher: ""`(每个工具都过);PostToolBatch 不支持 matcher,SessionEnd 不需要。
+ * timeout 5:PreToolUse 超时不拦截(走 Claude Code 自己的权限流程);SessionEnd 默认预算只有 1.5 秒,写了 5 会把预算提到 5 秒。
+ */
+export function hookSettingsSnippet(host: string, port: number): Record<string, unknown> {
+  const hook = { type: "http", url: `http://${host}:${port}/hook/claude-code`, timeout: 5 };
+  const matched = [{ matcher: "", hooks: [hook] }];
+  const unmatched = [{ hooks: [hook] }];
+  return {
+    hooks: {
+      PreToolUse: matched,
+      PostToolUse: matched,
+      PostToolUseFailure: matched,
+      PostToolBatch: unmatched,
+      SessionEnd: unmatched,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +264,41 @@ function cmdReplay(args: Args): number {
   process.stderr.write(`\n${entries.length} 条记录`);
   if (badLines > 0) process.stderr.write(`,${badLines} 行无法解析(已跳过)`);
   process.stderr.write(`\n文件:${file}\n`);
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// journal stats(spec-m4 §0 第 7 项)
+// ---------------------------------------------------------------------------
+
+function cmdStats(args: Args): number {
+  const file = args.positional[2] ?? journalFileFor(new Date());
+  const { entries, badLines } = replayFile(file);
+  const st = outcomeStats(entries);
+
+  if (args.flags.get("json") === true) {
+    process.stdout.write(JSON.stringify({ file, bad_lines: badLines, ...st }, null, 2) + "\n");
+    return 0;
+  }
+
+  const w = process.stdout.write.bind(process.stdout);
+  w(`zgate journal stats  文件:${file}\n`);
+  w(`决策 ${st.total} 行:allow ${st.by_verdict.allow} / ask ${st.by_verdict.ask} / deny ${st.by_verdict.deny};带 hook 的 ${st.with_hook} 行`);
+  if (badLines > 0) w(`;${badLines} 行无法解析(已跳过)`);
+  w("\n\n");
+  if (st.asked === 0) {
+    w("还没有问过用户的记录。\n");
+    return 0;
+  }
+  w(`问了 ${st.asked} 次:通过 ${st.approved}(其中工具失败 ${st.approved_failed})、拒绝 ${st.rejected}、unknown ${st.unknown}、没有结果 ${st.pending}\n\n`);
+  w(`${"rule_id".padEnd(30)} ${"source".padEnd(9)} ${"问了".padStart(5)} ${"通过".padStart(5)} ${"工具失败".padStart(6)} ${"拒绝".padStart(5)} ${"unknown".padStart(8)} ${"无结果".padStart(6)}\n`);
+  for (const r of st.rows) {
+    w(
+      `${r.rule_id.padEnd(30)} ${r.source.padEnd(9)} ${String(r.asked).padStart(6)} ${String(r.approved).padStart(6)} ${String(r.approved_failed).padStart(9)}` +
+        ` ${String(r.rejected).padStart(6)} ${String(r.unknown).padStart(8)} ${String(r.pending).padStart(8)}\n`,
+    );
+  }
+  w("\n没有结果 = 悬着的 ask 没等到会话结束(daemon 重启、超过 30 分钟、老版本 Claude Code 没有 tool_use_id)。unknown = 会话结束或调用落定时仍没通过;拒绝 v1 不推断。\n");
   return 0;
 }
 
@@ -531,12 +570,11 @@ export function main(argv: readonly string[]): number | Promise<number> {
       return cmdCheck(args);
     case "journal": {
       const sub = args.positional[1];
-      if (sub !== "replay") {
-        process.stderr.write(`未知的 journal 子命令:${sub ?? "(空)"}\n`);
-        process.stderr.write("用法:zgate journal replay <file>\n");
-        return 2;
-      }
-      return cmdReplay(args);
+      if (sub === "replay") return cmdReplay(args);
+      if (sub === "stats") return cmdStats(args);
+      process.stderr.write(`未知的 journal 子命令:${sub ?? "(空)"}\n`);
+      process.stderr.write("用法:zgate journal replay [file] | zgate journal stats [file] [--json]\n");
+      return 2;
     }
     case "bench":
       return cmdBench(args);
