@@ -1,4 +1,4 @@
-// SPEC.md §2.2 — 冻结契约。字段命名理由见 action.ts 顶部。
+// Context:探针取到的环境事实。字段命名理由见 action.ts 顶部。
 
 import { z } from "zod";
 
@@ -27,7 +27,7 @@ export type RepoFacts = Readonly<z.infer<typeof RepoFactsSchema>>;
 export const ContextSchema = z.object({
   resources: z.array(ResourceFactsSchema),
   repo: RepoFactsSchema,
-  env_hints: z.record(z.string(), z.string()), // 白名单,见 §6
+  env_hints: z.record(z.string(), z.string()), // 白名单,见 enrichers/index.ts
   elapsed_ms: z.number(),
 });
 export type Context = Readonly<z.infer<typeof ContextSchema>>;

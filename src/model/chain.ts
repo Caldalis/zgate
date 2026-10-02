@@ -1,4 +1,4 @@
-// SPEC.md §5.2 C —— chain:本地先判,P(verdict) 低于阈值就升级云端,云端答案是终局。
+// chain 后端:本地先判,P(verdict) 低于阈值就升级云端,云端答案是终局。
 //
 // 云端失败不回退到本地答案(那个答案置信度已经不够了),抛出去让管线降级到 ask。
 // 本地本身失败(超时 / 不可达)也升级到云端 —— chain 的意思就是"本地优先、云端兜底"。
@@ -43,7 +43,7 @@ export class ChainBackend implements ModelBackend {
     }
 
     const localMs = performance.now() - started;
-    // 两段之和不超过 5000 由配置保证(D14.17),剩下的就是云端自己那份预算
+    // 两段之和不超过 5000 由配置校验保证,剩下的就是云端自己那份预算
     const remaining = Math.min(this.cloud.timeoutMs, this.timeoutMs - localMs);
     const cloud = await withDeadline(signal, remaining, (s) => this.cloud.classify(req, s));
     return {

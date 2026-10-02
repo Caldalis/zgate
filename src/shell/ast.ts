@@ -1,21 +1,10 @@
-// SPEC.md §7 —— 文法层:Token[] → Node(递归下降)。
+// 文法层:Token[] → Node(递归下降)。只回答 shell 文法问题,不知道任何命令名、任何 verb。
 //
-// 本层只回答 shell 文法问题,不知道任何命令名、任何 verb。
+// 输入是一个段落的完整 token 流:`;` `&&` `||` `|` 在这里才构成 `list` / `pipeline` 节点,
+// 规则才可能用上"这两条命令是 && 关系"这类结构。
 //
-// 输入是**整条命令行的 token 流**(不是切好的段落):`;` `&&` `||` `|`
-// 这些连接符在这里才有结构意义 —— 它们构成 `list` / `pipeline` 节点。
-// 在切分阶段就把它们切掉,树就永远看不到"这两条命令是 && 关系"这件事,
-// 而那正是 §4.5 的规则可能需要的(例如"只有前一条成功才会执行")。
-//
-// 节点命名刻意对齐 tree-sitter-bash 的文法,步 3 的差分对比可以直接比类型:
-//   program / list / pipeline / command / redirected_statement
-//   file_redirect / heredoc_redirect / if_statement / for_statement
-//   while_statement / do_group / function_definition / compound_statement
-//   command_substitution / process_substitution / variable_assignment
-//
-// 为什么不用 tree-sitter 本体:它的 wasm 在 Bun 下能跑(实测 p50 7µs),
-// 但要拖进 node-gyp-build 这套构建工具链;而我们的词法已经有独立测试钉着,
-// 缺的只是"结构"这一层。见 DECISIONS 的 D5.x。
+// 节点命名对齐 tree-sitter-bash 的文法,便于对照。
+// 不用 tree-sitter 本体:它会拖进 node-gyp-build 原生构建链,而依赖只有 zod;词法 lex.ts 已经有了,缺的只是结构这一层。
 
 import type { Token } from "./lex.ts";
 
@@ -24,11 +13,8 @@ import type { Token } from "./lex.ts";
 // ---------------------------------------------------------------------------
 
 /**
- * 抽象节点。
- *
- * `tokens` 是构成这个节点的**原始 token 切片**,不是转写过的字符串 ——
- * quoted / fd 这些词法信息在往上层传时不会丢。
- * 要文本用 `textOf()`(仅供日志/调试)。
+ * 抽象节点。`tokens` 是原始 token 切片而不是转写过的字符串,quoted / fd 这些词法信息不会丢。
+ * 要文本用 `textOf()`(仅供日志 / 调试)。
  */
 export interface Node {
   readonly type: NodeType;
@@ -90,17 +76,13 @@ export type NodeType =
 
 export interface ParseResult {
   readonly root: Node;
-  /** 文法层面没能理解的部分。非空 ⇒ 调用方必须落 unknown(§4.2) */
+  /** 文法层面没能理解的部分。非空 ⇒ 调用方必须落 unknown */
   readonly errors: readonly string[];
-  /** `bash -c "…"` 这类内联脚本,待上层递归解析 */
+  /** 预留,目前恒为空:`bash -c "…"` 由 walker 递归处理 */
   readonly nested: readonly string[];
 }
 
-/**
- * 整条命令行的 token 流 → AST。
- *
- * 不抛异常:问题记进 `errors`,上层据此落 unknown。
- */
+/** 一个段落的 token 流 → AST。不抛异常:问题记进 `errors`,上层据此落 unknown。 */
 export function parse(tokens: readonly Token[]): ParseResult {
   const b = new Builder(tokens);
   const root = b.parseProgram();
@@ -108,10 +90,8 @@ export function parse(tokens: readonly Token[]): ParseResult {
 }
 
 /**
- * 节点的文本。token 之间补一个空格。
- *
- * 只给日志和调试用 —— **判断逻辑请读 `tokens`**,因为补回的空格会丢失
- * "这两个词原本是不是连在一起"的信息。
+ * 节点的文本,token 之间补一个空格。只给日志和调试用:补回的空格丢了"两个词原本是否相连",
+ * 判断逻辑请读 `tokens`。
  */
 export function textOf(node: Node): string {
   return node.tokens.map((t) => t.text).join(" ");
@@ -188,12 +168,7 @@ class Builder {
     return { type: "program", tokens: this.tokens, children };
   }
 
-  /**
-   * list:`a; b` / `a && b` / `a || b`
-   *
-   * 连接符本身也要留在 node.tokens 里 —— 上层要能看出这两条命令
-   * 是 `&&` 还是 `;`。
-   */
+  /** list:`a; b` / `a && b` / `a || b`。连接符留在 node.tokens 里,上层要能看出是 `&&` 还是 `;`。 */
   private parseList(): Node | null {
     const from = this.i;
     const parts: Node[] = [];
@@ -285,9 +260,8 @@ class Builder {
       case "(":
         return this.parseSubshell();
       default:
-        // 函数定义:`name ( ) { … }` / `name () { … }`
-        // 要在 parseSimpleCommand 之前识别,否则 `f(){ ... }` 会被切成
-        // 一个叫 f 的命令加一个孤立的 `{`。
+        // 函数定义 `name () { … }` 要在 parseSimpleCommand 之前识别,
+        // 否则 `f(){ ... }` 会被切成一个叫 f 的命令加一个孤立的 `{`。
         if (this.isFunctionDefinition()) return this.parseFunctionDefinition();
         return this.parseCommandOrRedirect();
     }
@@ -468,12 +442,7 @@ class Builder {
     return this.node("word", from, []);
   }
 
-  /**
-   * 记录内联脚本。
-   *
-   * 词法层**不会**把 `$(…)` 拆出里面的命令(那是 §7 要求的 unknown 触发点),
-   * 所以这里只登记"存在一个需要上层处理的内联脚本"。
-   */
+  /** 占位,目前什么都不登记。 */
   private recordSubstitution(text: string, _index: number): void {
     void text;
     void _index;
@@ -485,12 +454,7 @@ class Builder {
     return this.isRedirectStartAt(0);
   }
 
-  /**
-   * 吃掉一个"裸 fd 数字"(`2> err.log` 的 `2`)。
-   *
-   * 只有当它后面紧贴重定向算子时才算 fd —— `head -n 5 file` 的 `5`
-   * 后面不是算子,所以不会被误吃。
-   */
+  /** 吃掉一个裸 fd 数字(`2> err.log` 的 `2`)。后面紧贴重定向算子才算,`head -n 5 file` 的 `5` 不会被误吃。 */
   private consumeRawFdPrefix(): boolean {
     const t = this.peek();
     if (t === undefined || t.quoted || !/^\d+$/.test(t.text)) return false;
@@ -534,10 +498,8 @@ class Builder {
 
     this.i += 1;
 
-    // `2> file` 的 fd 是算子**之前**的一个独立数字 token;
-    // `2>&1` 的话词法层已经把它记进 op.fd 了。
-    // 两种都要认,并且节点要从 fd 的位置开始切 token ——
-    // 否则节点自称是 `2` 而 tokens 里装的是 `err.log`。
+    // `2> file` 的 fd 是算子之前的独立数字 token,`2>&1` 的 fd 词法层已记进 op.fd。
+    // 两种都要认,节点从 fd 的位置开始切 token。
     const fdIndex = op.fd !== null ? from : (() => {
       const prev = this.tokens[from - 1];
       return prev !== undefined && !prev.quoted && /^\d+$/.test(prev.text) ? from - 1 : -1;
@@ -695,9 +657,8 @@ class Builder {
         this.i += 1;
         continue;
       }
-      // case 项的形状:`PATTERN) CMD ;;`
-      // 有 `)` 的话:模式部分读到 `)` 为止,跳过去,剩下的才是命令。
-      // 不跳的话 `a)` 会被当成命令名,真正的 `rm -rf /` 反而被吃掉。
+      // case 项 `PATTERN) CMD ;;`:模式读到 `)` 为止跳过去,剩下的才是命令,
+      // 否则 `a)` 会被当成命令名,真正的 `rm -rf /` 反而被吃掉。
       const item = this.i;
       const close = this.findPatternClose();
       if (close >= 0) this.i = close + 1;

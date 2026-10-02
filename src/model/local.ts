@@ -1,12 +1,11 @@
-// SPEC.md §5.2 A —— 本地 GGUF 后端:只是 llama-server 的一个 HTTP 客户端。
+// 本地 GGUF 后端:只是 llama-server 的一个 HTTP 客户端。
 //
 // 不启动、不停止、不检查健康。走 /v1/chat/completions 让服务器渲染模型自己的
 // chat template,关 thinking,grammar 约束只许输出 allow / ask。
 //
-// 置信度:llama.cpp 报的 logprob 是采样前的原始分布,所以自由那次开
-// logprobs 读到的两个词的 logprob 与强制续写逐条相同(21/21 实测,D14.4)。
-// 先读 top_logprobs;两个词不全在里面(多 token 词、别的 tokenizer)才退回
-// §5.2 A.4 的强制续写,多花两次往返。
+// 置信度:llama.cpp 报的 logprob 是采样前的原始分布,所以自由生成那次开 logprobs
+// 读到的两个词的 logprob 与强制续写相同。先读 top_logprobs;两个词不全在里面
+// (多 token 词、别的 tokenizer)才退回强制续写,多花两次往返。
 
 import type { LocalConfig } from "../config.ts";
 import {
@@ -83,7 +82,7 @@ export class LocalBackend implements ModelBackend {
     };
   }
 
-  /** §5.2 A.4 强制续写:各强制一次,读被强制 token 的 logprob。 */
+  /** 强制续写:allow / ask 各强制一次,读被强制 token 的 logprob。 */
   private async forced(
     messages: readonly ChatMessage[],
     signal: AbortSignal,

@@ -1,13 +1,13 @@
-// spec-m5 —— opencode 适配器。**只做格式转换。**
+// opencode 适配器,只做格式转换。
 //
 // opencode 没有 Claude Code 那样的 http hook;它的扩展点是进程内插件(`@opencode-ai/plugin` 的 Hooks)。
 // 所以这里的线格式由 zgate 自己定义,发送方是随仓库分发的插件 `plugins/opencode/zgate.ts`:
 //
-//   { v: 1, event: "before",  session_id, call_id, tool, args, cwd, agent_version? }   → 回 Decision(§2.3)
+//   { v: 1, event: "before",  session_id, call_id, tool, args, cwd, agent_version? }   → 回 Decision
 //   { v: 1, event: "replied", session_id, call_id, reply: "once" | "always" | "reject" } → 回 {}
 //   { v: 1, event: "after",   session_id, call_id, tool }                               → 回 {}
 //
-// 参照:opencode 1.18.33(2026-09-29,源码 packages/core/src/tool/*.ts):工具 id 与参数名
+// 参照 opencode 1.18.33(源码 packages/core/src/tool/*.ts)的工具 id 与参数名:
 //   bash {command, workdir?} / read {path} / edit {path, oldString, newString} / write {path, content} /
 //   glob {pattern, path?} / grep {pattern, path?, include?} / apply_patch {patchText} / webfetch {url} / websearch {query} /
 //   task / todowrite / question / skill(无可判动作)。
@@ -46,7 +46,7 @@ const TOOL_VERB: ReadonlyMap<string, Verb> = new Map<string, Verb>([
   ["websearch", "network"],
 ]);
 
-/** 目标字段:opencode 一律叫 path(Claude Code 叫 file_path);websearch 的 query 与 Claude Code 同一处理(D15.10)。 */
+/** 目标字段:opencode 一律叫 path(Claude Code 叫 file_path);websearch 的 query 与 Claude Code 同一处理。 */
 const TARGET_FIELDS: ReadonlyMap<string, readonly string[]> = new Map([
   ["read", ["path"]],
   ["glob", ["path"]],
@@ -127,7 +127,7 @@ function patchTargets(text: string): { verb: Verb; raw: string }[] {
 }
 
 /**
- * before 事件 → Action 列表。语义与 Claude Code 适配器逐条对齐(§7:bash 按复合语句切分;空数组 = 无动作可判 ⇒ 放行)。
+ * before 事件 → Action 列表。语义与 Claude Code 适配器逐条对齐:bash 按复合语句切分,空数组 = 无动作可判 ⇒ 放行。
  * bash 的 workdir 会改变相对路径的基准,所以 Action.cwd 取 cwd/workdir。
  */
 export function toActionsOpencode(input: OpencodeBefore, turnId: string): readonly Action[] {

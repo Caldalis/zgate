@@ -1,4 +1,4 @@
-// SPEC.md §5.3 —— 配置文件与 createBackend 工厂。
+// 配置文件与 createBackend 工厂。
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,7 +19,7 @@ function tmpFile(name: string, content: string): string {
   return p;
 }
 
-describe("§5.3 schema", () => {
+describe("schema", () => {
   test("三种后端的示例配置都合法", () => {
     expect(ConfigSchema.safeParse({ model: { backend: "local", local: { base_url: "http://127.0.0.1:8899", timeout_ms: 2000, model_name: "qwen35-9b" } } }).success).toBe(true);
     expect(ConfigSchema.safeParse({ model: { backend: "cloud", cloud: { provider: "anthropic", api_key_env: "ANTHROPIC_API_KEY", model: "claude-x", timeout_ms: 3000 } } }).success).toBe(true);
@@ -37,12 +37,12 @@ describe("§5.3 schema", () => {
     ).toBe(true);
   });
 
-  test("空对象合法(= M1 行为)", () => {
+  test("空对象合法(= 不走模型)", () => {
     expect(ConfigSchema.safeParse({}).success).toBe(true);
     expect(parseConfig("{}").model).toBeUndefined();
   });
 
-  test("★ timeout_ms 必须在 100–5000 之间(§3.2 的 5000 封顶)", () => {
+  test("★ timeout_ms 必须在 100–5000 之间(5000 是 hook 超时封顶)", () => {
     const mk = (t: number) => ({ model: { backend: "local", local: { base_url: "http://x", timeout_ms: t } } });
     expect(ConfigSchema.safeParse(mk(99)).success).toBe(false);
     expect(ConfigSchema.safeParse(mk(5001)).success).toBe(false);
@@ -50,7 +50,7 @@ describe("§5.3 schema", () => {
     expect(ConfigSchema.safeParse(mk(5000)).success).toBe(true);
   });
 
-  test("★ chain 的 local + cloud 超时之和不能超过 5000(否则云端拿不到自己的预算,D14.17)", () => {
+  test("★ chain 的 local + cloud 超时之和不能超过 5000(否则云端拿不到自己的预算)", () => {
     const mk = (l: number, c: number) => ({
       model: { backend: "chain", chain: { local: { base_url: "http://x", timeout_ms: l }, cloud: { provider: "openai", api_key_env: "K", model: "m", timeout_ms: c } } },
     });
@@ -139,11 +139,11 @@ describe("createBackend 工厂", () => {
   });
 });
 
-describe("配置警告:合法但可疑,只提示不拒绝(D14.22)", () => {
+describe("配置警告:合法但可疑,只提示不拒绝", () => {
   const base = { local: { base_url: "http://x", timeout_ms: 1000 }, cloud: { provider: "openai", api_key_env: "K", model: "m", timeout_ms: 1000 } };
   const chainWith = (t?: number) => parseConfig(JSON.stringify({ model: { backend: "chain", chain: t === undefined ? base : { ...base, escalation_threshold: t } } }));
 
-  test("★ chain 阈值 ≤ 0.5 → 一条警告,说明升级永不触发;照抄旧 SPEC 示例的 0.4 会被提示", () => {
+  test("★ chain 阈值 ≤ 0.5 → 一条警告,说明升级永不触发", () => {
     expect(configWarnings(chainWith(0.4))).toHaveLength(1);
     expect(configWarnings(chainWith(0.4))[0]).toMatch(/0\.5/);
     expect(configWarnings(chainWith(0.5))).toHaveLength(1);

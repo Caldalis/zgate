@@ -1,9 +1,9 @@
 // zgate eval —— 拿一组人工标注的 SOFT 样本量模型:一致率、该问却放行、误打断、延迟。
 //
-// 用例格式与 §12 golden 相同(setup / cwd / tool / tool_input),多一个人工标签 `label`。
+// 用例格式与 golden 相同(setup / cwd / tool / tool_input),多一个人工标签 `label`。
 // 每条在独立临时目录里走完整生产路径:hook 输入 → 适配器 → decideAllAsync(noCache)。
-// 它只是 `zgate check --model` 的批量版,给 M2 的数字一个可复现的入口(D14.24);
-// 结果的进一步分析仍留在 Python(§16),这里不做训练与数据集(§1)。
+// 它只是 `zgate check --model` 的批量版,给模型的数字一个可复现的入口;
+// 进一步分析留给 Python 侧,这里不做训练与数据集。
 
 import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

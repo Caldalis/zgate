@@ -1,4 +1,4 @@
-// SPEC.md §5.5 —— createBackend 工厂。管线只拿 ModelBackend,后端名只在这里出现。
+// createBackend 工厂。管线只拿 ModelBackend,后端名只在这里出现。
 
 import { ConfigError, type ModelConfig } from "../config.ts";
 import type { ModelBackend } from "../core/model.ts";

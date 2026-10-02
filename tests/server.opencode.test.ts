@@ -1,4 +1,4 @@
-// spec-m5 —— `/hook/opencode` 端到端:起真的 daemon,按插件的线格式打它,断言 Decision 响应、journal 行与 outcome 补丁。
+// `/hook/opencode` 端到端:起真的 daemon,按插件的线格式打它,断言 Decision 响应、journal 行与 outcome 补丁。
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -62,8 +62,8 @@ const rowsFor = (callId: string): Body[] => lines().filter((r) => r["patch"] ===
 const patchesFor = (decisionId: string): Body[] => lines().filter((r) => r["patch"] === "outcome" && r["decision_id"] === decisionId);
 const decisionIdOf = (row: Body): string => (row["decision"] as Body)["decision_id"] as string;
 
-describe("spec-m5 before → Decision", () => {
-  test("★ bash `npm publish` → ask 的 Decision(§2.3 形状),journal 行 agent 是 opencode、hook 带 call_id", async () => {
+describe("before → Decision", () => {
+  test("★ bash `npm publish` → ask 的 Decision(与 /decide 同形),journal 行 agent 是 opencode、hook 带 call_id", async () => {
     const c = id();
     const { status, json } = await hook(before(c, "bash", { command: "npm publish" }));
     expect(status).toBe(200);
@@ -119,7 +119,7 @@ describe("spec-m5 before → Decision", () => {
   });
 });
 
-describe("spec-m5 outcome:replied / after", () => {
+describe("outcome:replied / after", () => {
   test("★ ask → replied reject → rejected / null(opencode 给得出用户的回答)", async () => {
     const c = id();
     await hook(before(c, "bash", { command: "npm publish" }));

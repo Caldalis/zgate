@@ -1,4 +1,4 @@
-// spec-m3 §3 —— 两条策略规则与 §3.3 的顺序不变量。真实文件系统,走完整生产路径(toActions → 管线)。
+// 两条策略规则与顺序不变量。真实文件系统,走完整生产路径(toActions → 管线)。
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -63,7 +63,7 @@ function hitsFor(tool: string, input: Record<string, unknown>, cwd: string): str
 }
 
 describe("注册表", () => {
-  test("policy.scope 在 RULES 末尾(同档先命中者胜,§3.3 不变量的一半);policy.self_write 在最前且不问模型(D15.7)", () => {
+  test("policy.scope 在 RULES 末尾(同档先命中者胜,顺序不变量的一半);policy.self_write 在最前且不问模型", () => {
     expect(RULES.at(-1)!.id).toBe("policy.scope");
     expect(RULES[0]!.id).toBe("policy.self_write");
     expect(RULES[0]!.skipModel).toBe(true);
@@ -72,7 +72,7 @@ describe("注册表", () => {
   });
 });
 
-describe("scopeHits(§2.3)", () => {
+describe("scopeHits", () => {
   test("read 不命中,哪怕目标就在 scope 里", () => {
     const dir = repo("scope: migrations/\n", MIG);
     expect(hitsFor("Read", { file_path: join(dir, "migrations/001_init.sql") }, dir)).toEqual([]);
@@ -91,7 +91,7 @@ describe("scopeHits(§2.3)", () => {
     expect(hitsFor("Bash", { command: "rm -rf ." }, dir)).toEqual(["src/migrations"]);
   });
 
-  test("路径:还不存在的目标按将被创建的位置比(D12.11)", () => {
+  test("路径:还不存在的目标按将被创建的位置比", () => {
     const dir = repo("scope: migrations/\n", MIG);
     expect(hitsFor("Write", { file_path: join(dir, "migrations/002_new.sql"), content: "x" }, dir)).toEqual(["migrations"]);
   });
@@ -217,7 +217,7 @@ describe("policy.self_write(pre SOFT)", () => {
   });
 });
 
-describe("★ §3.3 顺序不变量:rule_id 是 policy.scope 当且仅当没有别的 SOFT 命中", () => {
+describe("★ 顺序不变量:rule_id 是 policy.scope 当且仅当没有别的 SOFT 命中", () => {
   test("`scope: .` + cat .env → fs.secret_file(post,排在 policy 之前)", () => {
     const r = bash("cat .env", repo("scope: .\n", { ...MIG, ".env": "K=1\n" }));
     expect(r.decision.rule_id).toBe("fs.secret_file");

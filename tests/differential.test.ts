@@ -1,17 +1,8 @@
-// SPEC.md §7 —— AST 路与手写路的**差分测试**。
+// AST 路与手写路的差分测试。两份解析器独立写成(线性扫描 + 启发式补丁 / 递归下降 + 树遍历),
+// 同时错在同一处的概率很低,所以差异就是信号。
 //
-// 为什么这件事重要:两份解析器是**独立写出来**的(一份是线性扫描 + 启发式
-// 补丁,一份是递归下降 + 树遍历)。它们同时错同一处的概率,远低于单一实现
-// 出错的概率 —— 所以差异就是信号。
-//
-// 用法:任何改动解析器之后跑一次。差异必须逐条定性:
-//   - 手写版错 → 记进 DECISIONS,AST 版是正确答案
-//   - AST 版错  → 修 AST
-//   - 都错      → 两条都要修
-// 不允许的只有一种:"有差异但说不清谁对"。
-//
-// 语料是手写的(tests/corpus/commands.txt),可能过拟合。§15.7 的 journal
-// 跑起来之后应该换成从 ~/.zgate/journal/ 捞的真实命令。
+// 改动解析器后跑一次,差异必须逐条定性:手写版错 → 写进 KNOWN_DIFFS 并注明理由;AST 版错 → 修 AST;都错 → 都修。
+// 语料是手写的(tests/corpus/commands.txt),可能过拟合,日后应换成从 ~/.zgate/journal/ 捞的真实命令。
 
 import { describe, expect, test } from "bun:test";
 import { parseCommand } from "../src/shell/index.ts";
@@ -48,11 +39,8 @@ async function loadCorpus(): Promise<string[]> {
 const corpus = await loadCorpus();
 
 /**
- * 已核实的差异:AST 版在这里**比手写版正确**,逐条看过了。
- *
- * 写死成白名单而不是放宽断言 —— 白名单让每一条都必须有理由,
- * 而"放宽比较"会让将来真正的回归悄悄溜过去。
- * 任何**新**差异都会让测试红。
+ * 已核实的差异:这些地方 AST 版比手写版正确。
+ * 写死成白名单而不放宽比较:每一条都得有理由,任何新差异都会让测试红。
  */
 const KNOWN_DIFFS: ReadonlyMap<string, string> = new Map([
   [
@@ -93,8 +81,7 @@ describe("差分:AST 路 vs 手写路", () => {
   });
 
   test("危险命令两边都必须看得见", async () => {
-    // 差分一致还不够 —— 两边可能同时"一致地看不见"。
-    // 这一组钉的是"至少有一边能看出危险"。
+    // 差分一致还不够 —— 两边可能"一致地看不见",所以单独钉住生产路径能看出危险。
     const dangerous = [
       "rm -rf /",
       "sudo rm -rf /",
@@ -127,8 +114,7 @@ describe("差分:AST 路 vs 手写路", () => {
   });
 
   test("良性命令两边都不许变成 unknown", async () => {
-    // 反向断言:把良性命令判成 unknown 就是每次打断一次,
-    // 按项目简介的判据那是产品失败,和漏判危险命令等价。
+    // 反向断言:把良性命令判成 unknown 就是每次打断一次,和漏判危险命令一样是失败。
     const benign = [
       "bun test",
       "npm run build",

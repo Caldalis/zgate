@@ -1,26 +1,16 @@
-// SPEC.md §8 —— HTTP 协议。
+// HTTP 服务:`Bun.serve()` 默认监听 127.0.0.1:8787,只绑 loopback。
 //
-// `Bun.serve()` 监听 127.0.0.1:8787,只绑 loopback。
-//
-// 四个端点,职责分得很清楚:
-//   /hook/claude-code  Claude Code 的钩子入口。PreToolUse 走 §10 的格式转换与裁决;
+//   /hook/claude-code  Claude Code 的钩子入口。PreToolUse 走格式转换与裁决;
 //                      PostToolUse / PostToolUseFailure / PostToolBatch / SessionEnd 只旁观:
-//                      查悬着表、写 outcome 补丁、回 {}(spec-m4 §2,D16.0)
-//   /hook/opencode     opencode 插件的入口(spec-m5):before 走裁决回 Decision;replied / after 只写 outcome、回 {}
+//                      查悬着表、写 outcome 补丁、回 {}
+//   /hook/opencode     opencode 插件的入口:before 走裁决回 Decision;replied / after 只写 outcome、回 {}
 //   /decide            通用入口,供测试和其他适配器用(收 Action,返回 Decision)
-//   /outcome           M4 数据飞轮的入口。追加进日志,不做分析;钩子推出来的 outcome 与它同一入口
+//   /outcome           外部记录用户的实际选择,只追加进日志;钩子推出来的 outcome 与它同一入口
 //   /healthz           存活检查
 //
-// 关于 `/hook/claude-code` 有一条必须写下来的行为:**它永远返回 200**。
-// 钩子进程挂掉、JSON 解析失败、内部异常 —— 一律回一个"不干预"的响应,
-// 让 Claude Code 走它自己的权限流程。
-//
-// 为什么:§3.2 的降级方向是"绝不 fail-open 也绝不 fail-closed"。返回
-// 非 200 等于把这个决定外包给 Claude Code(它可能当成错误而中断工具调用),
-// 那是 fail-closed。回一个明确的 allow 也是错的 —— 那是在没有判断依据时
-// 假装判断过了。正确做法是**不表态**:给 Claude Code 的回答是"我这边
-// 没意见",于是它继续走原本的权限确认。用户看到的是没装网关时的行为,
-// 也就是 §3.2 说的"最坏情况不低于纯规则 baseline"。
+// `/hook/claude-code` 永远返回 200:JSON 解析失败、内部异常一律回"不表态"的 ask,让 Claude Code 走自己的权限流程。
+// 非 200 可能让 Claude Code 中断工具调用(fail-closed);回 allow 是没依据时假装判断过(fail-open)。
+// 不表态时用户看到的就是没装网关时的行为。
 
 import { ActionSchema, type Action } from "./core/action.ts";
 import type { Decision } from "./core/decision.ts";
@@ -31,7 +21,7 @@ import { hookDetails, parseHookEvent, toActions, toHookResponse, type HookEvent,
 import { PendingAsks } from "./core/pending.ts";
 import { opencodeHookDetails, parseOpencodeEvent, toActionsOpencode, type OpencodeEvent } from "./adapters/opencode.ts";
 
-/** §8:默认 8787,只绑 loopback。 */
+/** 默认 8787,只绑 loopback。 */
 export const DEFAULT_PORT = 8787;
 export const DEFAULT_HOST = "127.0.0.1";
 
@@ -40,7 +30,7 @@ export const VERSION = "0.1.0";
 export interface ServerConfig {
   readonly port: number;
   readonly host: string;
-  /** §5 的模型后端;null = 不走模型(M1 行为)。由 cli 按 ~/.zgate/config.json 建 */
+  /** 模型后端;null = 不走模型。由 cli 按 ~/.zgate/config.json 建 */
   readonly backend: ModelBackend | null;
 }
 
@@ -63,21 +53,11 @@ function json(body: unknown, status = 200): Response {
 }
 
 /**
- * 网关**内部出错**时的响应。
+ * 网关内部出错时的响应:回 ask,把决定交还给人,也就是没装网关时的行为。
+ * allow 是 fail-open;deny 同样没依据,而且用户当天就会把网关卸掉,是 fail-closed。
  *
- * 回的是 `ask`,不是 `allow` 也不是 `deny`。理由要分清楚,因为这三个
- * 词在这里很容易被顺手写错:
- *
- *   allow  网关自己在故障时没有任何依据说 allow —— 那是 fail-open
- *   deny   同样没依据 —— 而且用户当天就会把网关卸掉,那是 fail-closed
- *   ask    把这个决定交还给人,也就是**没装网关时的行为**
- *
- * §3.2 要求"最坏情况不低于纯规则 baseline"。装网关之前的 baseline 就是
- * "Claude Code 照常问用户",所以这里必须回 ask。
- *
- * 注意这和 §15.3 那条"空 Action 列表 ⇒ allow"**不是一回事**:
- * 空列表是"我看懂了,这次没有要裁决的东西"(Task 工具、Bash 没带 command),
- * 那是有依据的放行。这里是无依据的故障,两者必须区分开。
+ * 和"空 Action 列表 ⇒ allow"不是一回事:空列表是看懂了、这次没有要裁决的东西(Task 工具、Bash 没带 command),
+ * 是有依据的放行;这里是无依据的故障。
  */
 function neutralResponse(reason: string): HookResponse {
   return {
@@ -89,7 +69,7 @@ function neutralResponse(reason: string): HookResponse {
   };
 }
 
-/** `/decide` 版的不表态:一个 verdict 为 ask 的 Decision,不记日志(D14.21)。 */
+/** `/decide` 版的不表态:一个 verdict 为 ask 的 Decision,不记日志。 */
 function neutralDecision(reason: string): Decision {
   return {
     verdict: "ask", reason, source: "fallback", rule_id: null,
@@ -98,10 +78,8 @@ function neutralDecision(reason: string): Decision {
 }
 
 /**
- * §8 的 `/decide`:收一个 Action,返回 Decision。
- *
- * 这个端点是**测试和其他适配器的入口**。它的 body 是 `{action: ...}`,
- * 不是 hook 的原始格式 —— 格式转换是适配器的活,不该在这里发生。
+ * `/decide`:收一个 Action,返回 Decision。供测试和其他适配器用。
+ * body 是 `{action: ...}`,不是 hook 的原始格式 —— 格式转换是适配器的活。
  */
 async function handleDecide(req: Request, opts: PipelineOptions): Promise<Response> {
   let raw: unknown;
@@ -115,10 +93,10 @@ async function handleDecide(req: Request, opts: PipelineOptions): Promise<Respon
     return json({ error: "body 必须是对象" }, 400);
   }
   const actionRaw = (raw as Record<string, unknown>)["action"];
-  // §2.4:只在边界 parse 一次。这里是边界。
+  // 只在边界 parse 一次,这里就是边界。
   const parsed = ActionSchema.safeParse(actionRaw);
   if (!parsed.success) {
-    return json({ error: "action 不符合 §2.1 的 schema", issues: parsed.error.issues }, 400);
+    return json({ error: "action 不符合 schema", issues: parsed.error.issues }, 400);
   }
 
   const action = parsed.data as Action;
@@ -130,15 +108,13 @@ async function handleDecide(req: Request, opts: PipelineOptions): Promise<Respon
     record(action, only?.context ?? null, result.decision, new Date(), only?.modelDetails ?? null, only?.policy ?? null);
     return json(result.decision);
   } catch {
-    // 与 /hook 同一条规矩(D10.1):网关自己出错时回 ask,不把降级方向外包给调用方
+    // 与 /hook 同一条规矩:网关自己出错时回 ask,不把降级方向外包给调用方
     return json(neutralDecision("网关内部错误"));
   }
 }
 
 /**
- * §10 的 `/hook/claude-code`。按 `hook_event_name` 分派(spec-m4 §2):
- * PreToolUse 走裁决;其余事件网关只是旁观者,永远回 `{}`。
- *
+ * `/hook/claude-code`:按 `hook_event_name` 分派。PreToolUse 走裁决;其余事件网关只旁观,永远回 `{}`。
  * body 不是 JSON 时回"不表态"的 ask:认不出是哪种事件,只能按最坏的(PreToolUse)处理。
  */
 async function handleHook(req: Request, opts: PipelineOptions, pending: PendingAsks): Promise<Response> {
@@ -162,10 +138,10 @@ function sessionOf(id: string | null | undefined): string {
 }
 
 /**
- * M4:Post 类事件。只查悬着表、写 §9 的补丁行,不改任何行为(spec-m4 §1 第 4 条)。
+ * Post 类事件。只查悬着表、写 outcome 补丁行,不改任何行为。
  *
  *   PostToolUse / PostToolUseFailure  工具真的执行了 ⇒ 悬着的 ask 是被用户点通过的:approved,tool_succeeded 看是哪个事件
- *   PostToolBatch                    批里仍悬着的 id 没来过 Post 事件 ⇒ 没执行就落定了(`-p` 自动拒绝、deny 规则先拦):unknown(D16.0)
+ *   PostToolBatch                    批里仍悬着的 id 没来过 Post 事件 ⇒ 没执行就落定了(`-p` 自动拒绝、deny 规则先拦):unknown
  *   SessionEnd                       该 session 剩下的全部 unknown
  *
  * 任何异常也回 `{}`:这些事件没有裁决可言,回 ask 反而是错的形状。
@@ -206,11 +182,11 @@ function observe(event: Exclude<HookEvent, { kind: "PreToolUse" }>, pending: Pen
 
 /**
  * PreToolUse:解析 hook 输入 → 适配成 Action[] → 逐条判 → 取最严 → 转成 hook 响应。
- * **任何一步失败都回"不表态"**,理由见文件顶部。M4 只多做两件事:journal 行带 `hook`,
- * 整体结论是 ask 时把这批里判 ask 的行挂进悬着表 —— 响应本身与 M3 逐字节相同(spec-m4 §1 第 1 条)。
+ * 任何一步失败都回"不表态",理由见文件顶部。另外两件事不影响响应:journal 行带 `hook`;
+ * 整体结论是 ask 时,把这批里判 ask 的行挂进悬着表。
  */
 async function handlePreToolUse(input: HookInput, opts: PipelineOptions, pending: PendingAsks): Promise<Response> {
-  // turn_id 由网关生成(§2.1),一次 hook 请求一个。
+  // turn_id 由网关生成,一次 hook 请求一个。
   const turnId = crypto.randomUUID();
 
   let actions: readonly Action[];
@@ -220,8 +196,7 @@ async function handlePreToolUse(input: HookInput, opts: PipelineOptions, pending
     return json(neutralResponse("网关解析调用参数失败"));
   }
 
-  // §15.3 的约定:空数组 = 没有要裁决的东西(Task,或 Bash 缺 command)。
-  // 直接放行,记不记日志都不影响正确性 —— 这里不记,免得日志被空动作灌满。
+  // 空数组 = 没有要裁决的东西(Task,或 Bash 缺 command):直接放行,不记日志,免得日志被空动作灌满。
   if (actions.length === 0) {
     return json(toHookResponse({
       verdict: "allow", reason: "", source: "rule", rule_id: null,
@@ -231,14 +206,14 @@ async function handlePreToolUse(input: HookInput, opts: PipelineOptions, pending
 
   try {
     const result = await decideAllAsync(actions, opts);
-    // §9:每条 Action 各记一行,带上判它时看到的 Context 与 model_details。
-    // 整体结论不单独记:它没有自己的 Action,hook 响应也带不回 decision_id。见 D11.2。
+    // 每条 Action 各记一行,带上判它时看到的 Context 与 model_details。
+    // 整体结论不单独记:它没有自己的 Action,hook 响应也带不回 decision_id。
     const now = new Date();
     const hook = hookDetails(input);
     for (const { action, context, decision, modelDetails, policy } of result.perAction) {
       record(action, context, decision, now, modelDetails, policy, hook);
     }
-    // M4:问了的这批里,只有判 ask 的那些行等着 Post 事件来对(allow 的行没被问过,D16.1)。
+    // 只有判 ask 的那些行等着 Post 事件来对:同批里 allow 的行没被问过。
     if (hook !== null && result.decision.verdict === "ask") {
       const asked = result.perAction.filter((p) => p.decision.verdict === "ask").map((p) => p.decision.decision_id);
       pending.put(sessionOf(input.session_id), hook.tool_use_id, asked);
@@ -249,7 +224,7 @@ async function handlePreToolUse(input: HookInput, opts: PipelineOptions, pending
   }
 }
 
-/** §8 的 `/outcome`。M1 只追加进日志,不做任何分析。 */
+/** `/outcome`:外部记录用户的实际选择。只追加进日志,不做分析。 */
 async function handleOutcome(req: Request): Promise<Response> {
   let body: unknown;
   try {
@@ -280,9 +255,9 @@ async function handleOutcome(req: Request): Promise<Response> {
 }
 
 /**
- * spec-m5 的 `/hook/opencode`。发送方是 zgate 自己的插件,所以响应就是 §2.3 的 Decision(与 /decide 同形),
- * 插件只读 verdict / reason。"不表态"也走 /decide 那套:verdict ask、source fallback,不记日志(D14.21)——
- * 插件收到 ask 什么都不做,交给 opencode 自己的确认框,正是"没装网关时的行为"。
+ * `/hook/opencode`。发送方是 zgate 自己的插件,所以响应就是 Decision(与 /decide 同形),插件只读 verdict / reason。
+ * "不表态"也走 /decide 那套:verdict ask、source fallback,不记日志 ——
+ * 插件收到 ask 什么都不做,交给 opencode 自己的确认框,正是没装网关时的行为。
  */
 async function handleOpencode(req: Request, opts: PipelineOptions, pending: PendingAsks): Promise<Response> {
   let body: unknown;
@@ -356,7 +331,7 @@ function handleHealthz(config: ServerConfig): Response {
     ok: true,
     version: VERSION,
     uptime_s: Math.round((Date.now() - startedAt) / 1000),
-    // §8:没配模型时是 "null",与 M1 一致
+    // 没配模型时是 "null"
     backend: config.backend?.name ?? "null",
   });
 }
@@ -364,21 +339,19 @@ function handleHealthz(config: ServerConfig): Response {
 /** 建 server。`cli.ts` 和测试都用这个,不直接调 `Bun.serve`。 */
 export function createServer(config: ServerConfig = defaultConfig()) {
   startJournal();
-  // M4:悬着的 ask 表,一个 daemon 一张;重启即丢(spec-m4 §0 第 5 项)
+  // 悬着的 ask 表,一个 daemon 一张;重启即丢
   const pending = new PendingAsks();
 
   const opts: PipelineOptions = {
     backend: config.backend,
-    // §6 的 env_hints 从这里进。传引用不传快照:白名单外的变量在探针里
-    // 就被过滤掉了,进日志的只有那四项(D12.3)。
+    // env_hints 从这里进。传引用不传快照:白名单外的变量在探针里就被过滤掉,进日志的只有白名单那四项。
     env: process.env,
   };
 
   const server = Bun.serve({
     port: config.port,
     hostname: config.host,
-    // 只处理这五条路由;其余一律 404。不做通配、不做中间件链 ——
-    // §1 说不许引入 HTTP 框架,那也包括"手写的迷你框架"。
+    // 只处理这五条路由,其余一律 404。不引入 HTTP 框架,也不手写通配 / 中间件链。
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
       const path = url.pathname;
@@ -402,7 +375,7 @@ export function createServer(config: ServerConfig = defaultConfig()) {
     },
   });
 
-  // §9:进程退出时 flush 剩余队列。同步实现,可以安全地放在信号处理器里。
+  // 进程退出时 flush 剩余队列。shutdownJournal 是同步的,可以放在信号处理器里。
   const onSignal = (): void => {
     shutdownJournal();
     void server.stop(true);

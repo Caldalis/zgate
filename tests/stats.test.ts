@@ -1,4 +1,4 @@
-// spec-m4 §0 第 7 项 —— `zgate journal stats`:纯函数 outcomeStats 与 CLI 出口。
+// `zgate journal stats`:纯函数 outcomeStats 与 CLI 出口。
 // 只测"数得对":问了几次、通过几次、unknown 几次、没结果几次,按 rule_id × source 分组;不做别的分析。
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -172,7 +172,7 @@ describe("zgate journal stats(CLI)", () => {
   });
 });
 
-describe("zgate serve 打印的 settings 片段(spec-m4 §0 第 6 项)", () => {
+describe("zgate serve 打印的 settings 片段", () => {
   test("★ 五种事件同一个 URL;工具类事件带 matcher,PostToolBatch / SessionEnd 不带", () => {
     const snip = hookSettingsSnippet("127.0.0.1", 8787) as { hooks: Record<string, { matcher?: string; hooks: { type: string; url: string; timeout: number }[] }[]> };
     expect(Object.keys(snip.hooks).sort()).toEqual(["PostToolBatch", "PostToolUse", "PostToolUseFailure", "PreToolUse", "SessionEnd"]);

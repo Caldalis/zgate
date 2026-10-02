@@ -1,14 +1,6 @@
-// SPEC.md §7 —— 词法层(lex.ts)的单元测试。
-//
-// 为什么要直接测 splitTopLevel / tokenize,而不是走 parseCommand:
-//
-//   AST 版要**复用同一个 lex.ts**。如果词法本身有错,手写版和 AST 版会
-//   同时错 —— 差分对比就发现不了,因为两边的输入就是错的。
-//   所以词法层必须有独立于任何"解析器实现"的测试。
-//
-// 这份测试的断言全部落在**字符级的输入输出**上:
-// 段落怎么切、token 怎么分、引号剥没剥、fd 认不认。
-// 它不知道任何命令名、任何 verb —— 那是 classify.ts 的事。
+// 词法层(lex.ts)的单元测试。
+// 手写版和 AST 版共用 lex.ts,词法错了两边会同时错,差分对比发现不了,所以要单独测。
+// 断言只落在字符级的输入输出上(段落怎么切、token 怎么分、引号、fd),不涉及命令名与 verb。
 
 import { describe, expect, test } from "bun:test";
 import { splitTopLevel, tokenize, type Token } from "../src/shell/lex.ts";
@@ -37,10 +29,8 @@ function seg(input: string): string[] {
 // ---------------------------------------------------------------------------
 
 describe("lex.splitTopLevel: 段落边界是换行", () => {
-  // 设计变更(见 D5.x):`;` `&&` `||` `|` `&` **不再**在这里切。
-  // 它们是结构,留给 tokenize + AST —— 在切分阶段就切掉,树就永远
-  // 看不到 `if … then … fi` 是一个整体。
-  // 只有换行才是"两条独立命令行"的边界。
+  // `;` `&&` `||` `|` `&` 不在这里切:它们是结构,留给 tokenize + AST,
+  // 否则树看不到 `if … then … fi` 是一个整体。只有换行是段落边界。
   test("换行切段", () => {
     expect(seg("a\nb")).toEqual(["a", "b"]);
     expect(seg("rm a\nrm b")).toEqual(["rm a", "rm b"]);
@@ -108,7 +98,7 @@ describe("lex.splitTopLevel: 注释", () => {
 
 describe("lex.splitTopLevel: 重定向算子不切", () => {
   test("`>|` 不是管道", () => {
-    // 曾经被 `|` 抢先切走,导致 `echo hi >| o.txt` 整条落 unknown
+    // 不能被 `|` 抢先切走,否则整条落 unknown
     expect(seg("echo hi >| o.txt")).toEqual(["echo hi >| o.txt"]);
   });
 
@@ -118,7 +108,7 @@ describe("lex.splitTopLevel: 重定向算子不切", () => {
   });
 
   test("普通重定向与管道都留在同一段里", () => {
-    // 段落边界现在是换行,所以管道也在同一段 —— 由 AST 切
+    // 段落边界是换行,管道也在同一段,由 AST 切
     expect(seg("echo hi > out.txt")).toEqual(["echo hi > out.txt"]);
     expect(seg("ls | wc -l")).toEqual(["ls | wc -l"]);
   });
@@ -273,8 +263,7 @@ describe("lex.tokenize: 重定向算子", () => {
   });
 
   test("`;` `&&` `||` `|` `&` 独立成 token", () => {
-    // 它们在顶层由 splitTopLevel 切,但**段落内部**仍会出现
-    // (`if [ -f x ]; then cat x; fi` 里的 `];`),所以词法层也要拆
+    // splitTopLevel 不切这些算子,由词法层拆成 token 交给 AST
     expect(texts("cd a && rm -rf b")).toEqual(["cd", "a", "&&", "rm", "-rf", "b"]);
     expect(texts("ls; pwd")).toEqual(["ls", ";", "pwd"]);
     expect(texts("a | b")).toEqual(["a", "|", "b"]);
@@ -283,9 +272,8 @@ describe("lex.tokenize: 重定向算子", () => {
   });
 
   test("`2>` 的数字是独立 token,由下游认成 fd", () => {
-    // 词法层的约定:只有 `2>&1` 这种「数字紧贴算子且后面跟 &数字」才把
-    // 数字吃进 fd 字段;`2> file` 里数字仍是一个普通 token,
-    // 由 index.ts 的 analyzeSegment 认出它是 fd(见那边的注释)。
+    // 只有 `2>&1` 这种「数字紧贴算子且后面跟 &数字」才把数字吃进 fd 字段;
+    // `2> file` 里数字仍是普通 token,由下游(ast.ts)认成 fd。
     const t = toks("rm b 2> err.log");
     expect(t.map((x) => x.text)).toEqual(["rm", "b", "2", ">", "err.log"]);
     expect(t[3]?.fd).toBe(null);
@@ -304,7 +292,7 @@ describe("lex.tokenize: 重定向算子", () => {
   });
 
   test("以数字结尾的普通 token 不被误判成 fd", () => {
-    // `src/` 前面是数字,但重定向算子不在它后面 —— fd 只认紧贴的
+    // `src2/` 带数字,但后面没有紧贴的重定向算子 —— fd 只认紧贴的
     const t = toks("grep -rn 'TODO' src2/");
     expect(t.map((x) => x.text)).toEqual(["grep", "-rn", "TODO", "src2/"]);
     expect(t.every((x) => x.fd === null)).toBe(true);
@@ -321,7 +309,7 @@ describe("lex.tokenize: 语法括号", () => {
   });
 });
 
-describe("lex.tokenize: 失败情况(§7 要求落 unknown)", () => {
+describe("lex.tokenize: 失败情况(落 unknown)", () => {
   test("命令替换 $(...)", () => {
     expect(tokenize("echo $(x)")).toBeNull();
     expect(tokenize("rm -rf $(cat list)")).toBeNull();

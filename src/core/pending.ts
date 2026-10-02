@@ -1,12 +1,11 @@
-// spec-m4 §0 第 5 项 —— 悬着的 ask 表。
+// 悬着的 ask 表。
 //
 // PreToolUse 判了 ask 之后,用户点了什么 Claude Code 不回传;能等到的只有工具真的执行之后的
-// PostToolUse / PostToolUseFailure,它们带同一个 tool_use_id(D16.0)。这张表把
+// PostToolUse / PostToolUseFailure,它们带同一个 tool_use_id。这张表把
 // (session_id, tool_use_id) → 那批里判 ask 的 decision_id 悬着,等 Post 事件来对。
 //
 // 纯数据结构,不做 IO、不起定时器:TTL 在读取时判,上限在写入时判(满了丢最旧,
-// Map 的插入序就是年龄序)。不落盘、不做 daemon 重启恢复:用户把确认框放着去吃饭是
-// 30 分钟量级的事,不是跨重启的事。
+// Map 的插入序就是年龄序)。不落盘:用户把确认框晾着是 30 分钟量级的事,不是跨重启的事。
 
 export const PENDING_TTL_MS = 30 * 60 * 1000;
 export const PENDING_MAX = 10_000;

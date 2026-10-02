@@ -1,14 +1,8 @@
-// SPEC.md §7 —— 词法层:字符串 → token。
+// 词法层:字符串 → token。不知道任何命令名、任何 verb(那是 classify.ts 的事)。
+//   splitTopLevel  按换行切成段落(引号与 heredoc 之外)
+//   tokenize       把一段切成 token:剥引号、处理转义、拆出连接符、重定向算子与 fd
 //
-// 只做两件事,都不涉及任何命令语义:
-//   splitTopLevel  按 `;` `&&` `||` `|` `\n` `&` 切成段落(引号与 heredoc 之外)
-//   tokenize       把一段切成 token:剥引号、处理转义、拆出重定向算子与 fd
-//
-// 为什么单独一层:这是全项目最脏的代码(§7 原话),也是唯一一处
-// "字符级正确性"决定安全的地方 —— 漏一个字符,`rm -rf /` 可能就没有目标了。
-// 它被 156 条测试钉着,所以**搬动它时只搬不改**;要改先改测试。
-//
-// 本层不知道任何命令名、任何 verb —— 那是 classify.ts 的事。
+// 这是"字符级正确性"决定安全的地方:漏一个字符,`rm -rf /` 可能就没有目标了。要改先改测试。
 
 /** 分词结果。`fd` 是紧贴重定向的数字(`2>&1` 的 2),不是参数。 */
 export interface Token {
@@ -18,26 +12,19 @@ export interface Token {
   /** 紧贴在重定向前面的数字(如 `2>&1` 的 `2`),不是参数 */
   readonly fd: string | null;
   /**
-   * 这个 token 是 `<<DELIM` 里的**分隔符本身**,不是普通参数。
-   *
-   * 为什么需要标记:heredoc 分隔符在文本上就是个单词(`EOF`),
-   * 光看文本无法和参数区分。不标记的话 `cat <<EOF > out.txt` 会变成
-   * `cat` 带三个参数(`EOF` `>` `out.txt`),既丢了重定向语义,
-   * 又把分隔符当成了文件路径。
+   * 这个 token 是 `<<DELIM` 里的分隔符本身。分隔符在文本上就是个单词,不标记的话
+   * `cat <<EOF > out.txt` 会变成 cat 带三个参数,既丢了重定向,又把分隔符当成了路径。
    */
   readonly heredoc?: true;
 }
 
 // ---------------------------------------------------------------------------
-// 顶层切分 —— `;` `&&` `||` `|` `\n`,引号之外
+// 顶层切分 —— 按换行,引号之外
 // ---------------------------------------------------------------------------
 
 /**
- * 一个段落。文本 + 它的 heredoc 分隔符(如果有)。
- *
- * 为什么要带分隔符:heredoc 的分隔符在文本上就是个普通单词,
- * `tokenize` 光看文本分不出它和参数的区别。切分阶段是唯一知道
- * "哪个词是分隔符"的地方,所以由这里传下去。
+ * 一个段落:文本 + 它的 heredoc 分隔符(如果有)。
+ * 切分阶段是唯一知道"哪个词是分隔符"的地方,所以由这里传给 tokenize。
  */
 export interface Segment {
   readonly text: string;
@@ -123,24 +110,18 @@ export function splitTopLevel(input: string): Segment[] | null {
       }
       if (delim === "") return null; // `<<` 后面没分隔符 —— 畸形
       pendingDelim = delim;
-      // 算子本身要留在 token 流里(`<<`),否则 AST 只看到一个孤零零的
-      // 分隔符单词,没法知道它是重定向而不是参数。
-      // 正文仍然被吃掉 —— 那部分才是"不产生写目标"的原因。
+      // `<<` 算子留在 token 流里,AST 才知道后面的单词是分隔符而不是参数;正文照样吃掉。
       const op = input.slice(i, j).replace(/\s+$/, "");
       const opTok = op.startsWith("<<-") ? "<<-" : "<<";
       cur += " " + opTok + " " + delim + " ";
       i = j;
 
-      // `<<EOF` 之后、换行之前,同一行上可能还有别的东西:
-      //   `cat <<EOF > out.txt`  ← `> out.txt` 是重定向,不能丢
-      //   `cat > out.txt <<EOF`  ← 那就没有尾巴
-      // 以前这里直接把整行当"正文行"跳过了,于是 `> out.txt` 被吞进正文,
-      // 写目标整个消失。现在把这一行的剩余部分交回主循环处理。
+      // `<<EOF` 之后同一行可能还有重定向(`cat <<EOF > out.txt`),不能当正文吞掉,
+      // 先接回 cur,再跳过正文。
       let sameLine = i;
       while (sameLine < input.length && at(sameLine) !== "\n") sameLine += 1;
       if (sameLine >= input.length) return null; // 没有正文行 —— 畸形
       const restOfLine = input.slice(i, sameLine);
-      // 先把同行的剩余内容接回 cur,再跳过这一行
       cur += restOfLine;
       i = sameLine;
       let k = i + 1;
@@ -155,10 +136,7 @@ export function splitTopLevel(input: string): Segment[] | null {
         if (lineEnd === -1) return null; // 正文没闭合
         k = lineEnd + 1;
       }
-      // 分隔符那一行就是本段命令的结尾。原文里它后面可能没有换行
-      // (`cat <<EOF\nhi\nEOF\nrm x` 的 EOF 后面直接是换行,但
-      // `rm x\ncat <<EOF\nhi\nEOF` 的 EOF 后面什么都没有),
-      // 所以这里必须自己把段落结掉,不能指望下一轮循环碰到 `\n`。
+      // 分隔符那一行就是本段的结尾,它后面可能没有换行,所以这里自己结段
       flush();
       continue;
     }
@@ -172,15 +150,9 @@ export function splitTopLevel(input: string): Segment[] | null {
       }
     }
 
-    // 只在**换行**处切段落。
-    //
-    // `;` `&&` `||` `|` `&` 一律留给 tokenize + AST —— 它们是结构,
-    // 在切分阶段就切掉,树就永远看不到 `if … then … fi` 是一个整体。
-    // (曾经在这里切,结果 `if [ -f x ]; then cat x; fi` 被切成三段,
-    // if_statement 缺 fi,整条落 unknown。)
-    //
-    // 换行之所以仍然切:那是"两条独立的命令行"的边界,
-    // 且 heredoc 正文靠它划定。
+    // 只在换行处切段落:`;` `&&` `||` `|` `&` 是结构,留给 tokenize + AST,
+    // 在这里切掉的话树就看不到 `if …; then …; fi` 是一个整体。
+    // 换行是两条独立命令行的边界,heredoc 正文也靠它划定。
     if (c === "\n") {
       flush();
       i += 1;
@@ -283,14 +255,8 @@ export function tokenize(segment: string, heredocDelimiter: string | null = null
       continue;
     }
 
-    // `;` `&&` `||` `|` `&` 独立成 token。
-    //
-    // 它们同时也是 splitTopLevel 的分隔符,那为什么不靠切分就行?
-    // 因为**段落内部**仍会出现它们:`if [ -f x ]; then cat x; fi` 里的
-    // `];` 和 `x;`、`f(){ rm -rf /; }` 里的 `/;`。
-    // 切分只处理顶层,段落内部的这些必须在词法层拆开,AST 才看得到结构。
-    // (index.ts 的 analyzeSegment 里有一条"下一个 token 以 > 开头就补认 fd"
-    // 的补丁 —— 那正是没有这一层时打的手工补丁。)
+    // `;` `&&` `||` `|` `&` 独立成 token:切分只认换行,这些连接符要在这里拆开,
+    // AST 才看得到结构(`if [ -f x ]; then cat x; fi`、`f(){ rm -rf /; }`)。
     if (c === ";" || c === "&" || c === "|") {
       // `;;` 是 case 的项分隔符
       if (c === ";" && at(i + 1) === ";") {
@@ -331,20 +297,14 @@ export function tokenize(segment: string, heredocDelimiter: string | null = null
       continue;
     }
 
-    // 命令替换 / 进程替换 —— §7:放弃整体解析
+    // 命令替换 / 进程替换:放弃整体解析
     if (c === "`") return null;
     if (c === "$" && at(i + 1) === "(") return null;
     if (c === "<" && at(i + 1) === "(") return null;
     if (c === ">" && at(i + 1) === "(") return null;
 
-    // `(` `)` `{` `}` 是语法括号,自成一个 token。
-    // 不拆的话 `:(){ :|:& };:` 的 `:(){` 会变成一个"像命令名但不是"的
-    // 东西,整条命令于是判失败 —— 而它其实是 fork bomb。
-    // 拆开之后 `:` 是 silent 内建、`()` / `{` 是关键字,各归各位。
-    //
-    // 例外:`${VAR}` 的 `{` `}` 是变量展开的一部分,不是语法括号。
-    // 不排除的话 `rm -rf ${BUILD_DIR}` 会被拆成 `$` `{` `BUILD_DIR` `}`,
-    // 删除目标从一个路径变成四个碎片 —— 规则层再也认不出它是什么。
+    // `(` `)` `{` `}` 是语法括号,自成一个 token,fork bomb `:(){ :|:& };:` 才能被正确拆开。
+    // 例外:`${VAR}` 的花括号是变量展开的一部分,拆开的话 `rm -rf ${BUILD_DIR}` 的目标会碎成四段。
     if (c === "{" && cur.endsWith("$")) {
       // `${...}`:整个展开式合成一个 token,和 `$VAR` 同样处理
       let j = i + 1;
@@ -361,12 +321,8 @@ export function tokenize(segment: string, heredocDelimiter: string | null = null
       continue;
     }
 
-    // 重定向算子。
-    //
-    // 要认全:`>` `>>` `>|` `>&` `<` `<<` `<&` `&>` `&>>`
-    // 之前漏了 `>|`(noclobber 下强制覆盖)和 `&>`(stdout+stderr 一起),
-    // 它们被拆成 `>` + `|` 和 `&` + `>`,于是下游看到的是一个管道或一个
-    // 后台符号 —— `echo hi >| o.txt` 整条落 unknown,`rm b &> f` 的目标丢了。
+    // 重定向算子要认全:`>` `>>` `>|` `>&` `<` `<<` `<&` `&>` `&>>`。
+    // 拆错的话下游会看到一个管道或后台符号,写目标就丢了。
     if (c === ">" || c === "<") {
       let op = c;
       i += 1;
@@ -390,10 +346,8 @@ export function tokenize(segment: string, heredocDelimiter: string | null = null
           }
         }
       }
-      // 紧贴重定向的数字是 fd(`2>` / `2>&1`),不是参数。
-      // 只有"数字 → 这个重定向 → 数字或 &数字"才是 fd 复制;
-      // 否则只是普通 token 里恰好以数字结尾(如 grep -rn 'TODO' src/),
-      // 那种情况 op 后面跟的不是数字也不是 &数字。
+      // 只有"数字 → 重定向 → 数字或 &数字"才是 fd 复制(`2>&1`),数字记进 fd;
+      // 其余情况数字照常作为普通 token 推出去。
       const fd = /^\d+$/.test(cur) ? cur : null;
       const followsDup = /^\d+$/.test(at(i)) || at(i) === "&";
       if (fd === null || !followsDup) {

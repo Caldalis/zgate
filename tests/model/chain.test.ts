@@ -1,4 +1,4 @@
-// SPEC.md §5.2 C —— ChainBackend:本地判,低置信度升级云端;云端失败降级。
+// ChainBackend:本地判,低置信度升级云端;云端失败降级。
 import { afterEach, describe, expect, test } from "bun:test";
 
 import { ChainBackend } from "../../src/model/chain.ts";

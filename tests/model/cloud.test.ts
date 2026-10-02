@@ -1,4 +1,4 @@
-// SPEC.md §5.2 B —— CloudBackend,对 mock Anthropic / OpenAI-compatible。
+// CloudBackend,对 mock Anthropic / OpenAI-compatible。
 import { afterEach, describe, expect, test } from "bun:test";
 
 import { CloudBackend, MAX_ATTEMPTS, VERDICT_SCHEMA, retryable } from "../../src/model/cloud.ts";
@@ -101,7 +101,7 @@ describe("裁决解析:整段必须是 {\"verdict\": allow|ask},绝不在文本�
     expect((await anthropic(srv.url).classify(request(), NO_ABORT)).verdict).toBe("ask");
   });
 
-  test("★ D14.16 的四条错判形状:带否定的散文一律不算合法格式", () => {
+  test("★ 带否定的散文一律不算合法格式:找词会读反的四种形状", () => {
     for (const text of [
       "I cannot allow this — it touches a file outside the project. Ask the user.",
       "Not routine. I would not allow it. Ask.",
@@ -169,7 +169,7 @@ describe("格式不对就重新生成,最多 5 次,超过降级", () => {
   });
 });
 
-describe("§5.2 B.2 重试:5xx / 网络错误一次,4xx / 429 不重试", () => {
+describe("重试:5xx / 网络错误一次,4xx / 429 不重试", () => {
   test("★ 500 后重试一次成功", async () => {
     srv = mockServer((_s, i) => (i === 0 ? json({ error: "boom" }, 500) : json(anthropicText(verdictJson("ask")))));
     const d = await anthropic(srv.url).classify(request(), NO_ABORT);

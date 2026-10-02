@@ -1,11 +1,5 @@
-// SPEC.md §6 —— enrichers 的测试。
-//
-// 这一层的测试有个和别处不同的地方:**它必须动真实的文件系统**。
-// 探针的全部价值就是"答案在环境里",把 fs 模拟掉就把被测对象删了。
-// 所以每个 case 在 mkdtemp 出来的临时目录里搭一个真实的小场景。
-//
-// 临时目录建在系统 tmp 下,不建在仓库里(§15.2 的 D2.17 已经踩过一次:
-// 探针脚本落进仓库,git status 就脏了)。
+// enrichers 的测试。必须动真实的文件系统:探针的价值就是"答案在环境里",把 fs 模拟掉就把被测对象删了。
+// 每个 case 在系统 tmp 下 mkdtemp 一个真实的小场景,不建在仓库里(否则 git status 会脏)。
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -20,12 +14,8 @@ import type { Resource } from "../src/core/action.ts";
 let root: string;
 
 beforeAll(() => {
-  // ★ 必须 realpath 一次。macOS 的 tmpdir 是 `/var/folders/...`,而 `/var`
-  // 本身是指向 `/private/var` 的软链接 —— 于是 mkdtempSync 给的路径和
-  // realpathSync 的结果**字面不等**,inside_cwd 会全线判成 false。
-  //
-  // 这不是探针的 bug,是探针要的输入本来就得是规范路径:cwd 由 agent 给出,
-  // 在真实机器上通常是 `/Users/...`(没有软链接)。测试这里替 agent 规范一下。
+  // ★ 必须 realpath 一次:macOS 的 tmpdir 在 `/var/folders/...`,而 `/var` 是指向 `/private/var` 的软链接,
+  // 不规范化的话 inside_cwd 会全线判成 false。探针要的 cwd 本来就是规范路径(agent 给的通常是 `/Users/...`)。
   root = tmp("zgate-enrich-");
 });
 
@@ -62,8 +52,7 @@ function mkdirp(rel: string): string {
 // ---------------------------------------------------------------------------
 describe("isInside:按路径分段比较,不是字符串前缀", () => {
   test("同名前缀的兄弟目录不算在里面", () => {
-    // 这是本函数存在的**唯一**理由。`startsWith` 会把下面这条判成 true,
-    // 于是一次删到 /repo-other 的操作看起来完全正常。
+    // `startsWith` 会把这条判成 true,于是一次删到 /repo-other 的操作看起来完全正常。
     expect(isInside("/a/repo", "/a/repo-other/x")).toBe(false);
     expect(isInside("/a/repo", "/a/repositories")).toBe(false);
   });
@@ -88,9 +77,8 @@ describe("isInside:按路径分段比较,不是字符串前缀", () => {
 
 // ---------------------------------------------------------------------------
 describe("fs 探针:目标不存在", () => {
-  // ★ D12.11:不存在的普通路径带**预期落点**。exists 仍是 false(东西不在),
-  //   但 resolved 是它将被创建的位置(最近存在祖先 realpath + 剩余部分),
-  //   于是 inside_cwd 对"越界写新文件"也能判。
+  // ★ 不存在的普通路径带预期落点:exists 仍是 false,但 resolved 是它将被创建的位置
+  //   (最近存在祖先的 realpath + 剩余部分),于是 inside_cwd 对"越界写新文件"也能判。
   test("不存在但在 cwd 内 → exists false,resolved 为预期落点,inside_cwd true", () => {
     const [f] = fsFacts([res(join(root, "nope/nothing"))], root, root);
     expect(f?.exists).toBe(false);
@@ -103,7 +91,7 @@ describe("fs 探针:目标不存在", () => {
     expect(f?.gitignored).toBeNull();
   });
 
-  test("★ 不存在且在 cwd 外 → resolved 落在外面,inside_cwd false(D12.11 的判据)", () => {
+  test("★ 不存在且在 cwd 外 → resolved 落在外面,inside_cwd false", () => {
     const outside = tmp("zgate-enrich-out-");
     try {
       const [f] = fsFacts([res(join(outside, "new"))], root, root);
@@ -131,7 +119,7 @@ describe("fs 探针:目标不存在", () => {
     }
   });
 
-  test("realpathSync 抛异常不会冒泡出去(§6 明确要求 try/catch)", () => {
+  test("realpathSync 抛异常不会冒泡出去", () => {
     expect(() => fsFacts([res(join(root, "no/such/deep/path"))], root)).not.toThrow();
   });
 });
@@ -174,7 +162,7 @@ describe("fs 探针:软链接 —— 本项目的核心场景", () => {
     const [f] = fsFacts([res("build")], join(root, "repo"));
     expect(f?.is_symlink).toBe(true);
     expect(f?.exists).toBe(true);
-    // ★ 这一条就是 §12 的 rm-symlink-out-of-repo:resolved 里必须出现 outside
+    // ★ golden 用例 rm-symlink-out-of-repo 的场景:resolved 里必须出现 outside
     expect(f?.resolved).toContain("zgate-outside-");
     expect(f?.symlink_target).toContain("zgate-outside-");
     // 链接在 cwd 里,但**它指向的东西**在外面。规则层靠这个分辨。
@@ -258,7 +246,7 @@ describe("git 探针:普通仓库", () => {
     expect(r.is_repo).toBe(true);
     expect(r.root).toBe(repo);
     expect(r.branch).toBe("feature/x");
-    expect(r.is_dirty).toBeNull(); // §6:M1 恒为 null
+    expect(r.is_dirty).toBeNull(); // 不算 dirty,不为它跑 git status
 
     rmSync(repo, { recursive: true, force: true });
   });
@@ -346,7 +334,7 @@ describe("git 探针:TTL 缓存", () => {
     expect(gitFacts(repo).branch).toBe("first");
 
     writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/second\n");
-    // 3 秒内仍是旧值 —— 这正是缓存该有的行为(§6 的 TTL 3 秒)
+    // TTL 3 秒内仍是旧值
     expect(gitFacts(repo).branch).toBe("first");
 
     clearGitCache();
@@ -367,7 +355,7 @@ describe("git 探针:TTL 缓存", () => {
 });
 
 // ---------------------------------------------------------------------------
-describe("env_hints:白名单(§6 的硬约束)", () => {
+describe("env_hints:白名单(硬约束)", () => {
   test("存在性三项是布尔字符串,不泄露值", () => {
     const h = envHints({ CI: "true", GIT_DIR: "/Users/someone/secret/path" });
     expect(h["CI"]).toBe("true");
@@ -394,8 +382,7 @@ describe("env_hints:白名单(§6 的硬约束)", () => {
       CI: "true",
     });
     const keys = Object.keys(h).sort();
-    // TERM_PROGRAM 是**有才采**,这里没给,所以不该出现 —— 这条断言同时
-    // 证明了白名单不是"永远输出四个键"。
+    // TERM_PROGRAM 有才采,这里没给所以不该出现:白名单不是"永远输出四个键"。
     expect(keys).toEqual(["CI", "GIT_DIR", "VIRTUAL_ENV"]);
     expect(JSON.stringify(h)).not.toContain("SECRET");
     expect(JSON.stringify(h)).not.toContain("ghp_");
@@ -404,7 +391,7 @@ describe("env_hints:白名单(§6 的硬约束)", () => {
 });
 
 // ---------------------------------------------------------------------------
-describe("enrich:组装 §2.2 的字段", () => {
+describe("enrich:组装 Context 字段", () => {
   test("空目标 + 非仓库:仍然产出合法的 repo 与 env_hints", () => {
     const bare = tmp("zgate-e-");
     const r = enrich([], bare, {});

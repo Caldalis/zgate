@@ -1,9 +1,5 @@
-// SPEC.md §3 / §3.1 / §3.2 —— 管线、缓存、降级表。
-//
-// 这个文件测的是**整条链路**:Action 进、Decision 出。
-// 上面几层的单元测试各自证明"某个判据是对的",这里证明"它们串起来
-// 还是对的" —— 而串联恰恰是最容易出问题的地方(缓存串味、降级方向反了、
-// 取最严取成了取最松)。
+// 管线、缓存、降级表:Action 进、Decision 出的整条链路。
+// 单元测试证明各个判据对,这里证明串起来还对:缓存串味、降级方向反了、取最严取成取最松,都出在串联上。
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -60,7 +56,7 @@ function action(
   });
 }
 
-/** 一个总是返回固定结论的后端,用来验证 §3.2 的"模型可用"那一列。 */
+/** 总是返回固定结论的后端,用来验证降级表"模型可用"那一列。 */
 class FixedBackend implements ModelBackend {
   readonly name = "local";
   readonly timeoutMs = 200;
@@ -71,12 +67,11 @@ class FixedBackend implements ModelBackend {
 }
 
 // ===========================================================================
-describe("§3.2 降级表:这是整个项目唯一的安全保证", () => {
+describe("降级表:这是整个项目唯一的安全保证", () => {
   test("HARD_DENY + 模型不可用 → deny,source 是 rule 不是 fallback", () => {
     const m = merge("HARD_DENY", null);
     expect(m.verdict).toBe("deny");
-    // ★ source 必须是 "rule":这条 deny **不是降级的产物**,它就是规则层
-    //   本来的结论。写成 fallback 会让 M2 的降级率统计失真。
+    // ★ source 必须是 "rule":这条 deny 是规则层本来的结论,不是降级;写成 fallback 会让降级率统计失真。
     expect(m.source).toBe("rule");
   });
 
@@ -95,11 +90,11 @@ describe("§3.2 降级表:这是整个项目唯一的安全保证", () => {
     expect(merge("SOFT", "deny")).toEqual({ verdict: "deny", source: "model" });
   });
 
-  test("PASS + 模型不可用 → allow,source 是 rule:放行是规则层的结论,不是降级(D14.18)", () => {
+  test("PASS + 模型不可用 → allow,source 是 rule:放行是规则层的结论,不是降级", () => {
     expect(merge("PASS", null)).toEqual({ verdict: "allow", source: "rule" });
   });
 
-  test("PASS + 模型可用 → 模型可以推翻(这是 M2 存在的意义)", () => {
+  test("PASS + 模型可用 → 模型可以推翻", () => {
     expect(merge("PASS", "deny")).toEqual({ verdict: "deny", source: "model" });
   });
 
@@ -116,8 +111,7 @@ describe("§3.2 降级表:这是整个项目唯一的安全保证", () => {
   });
 
   test("★ 绝不 fail-open:模型挂掉时 PASS 才 allow", () => {
-    // 这条断言存在的意义是把"降级"和"放行"明确分开。
-    // 如果哪天有人把 SOFT+null 改成 allow,这里立刻变红。
+    // 把"降级"和"放行"分开:哪天有人把 SOFT+null 改成 allow,这里立刻变红。
     expect(merge("SOFT", null).verdict).not.toBe("allow");
     expect(merge("HARD_DENY", null).verdict).not.toBe("allow");
   });
@@ -127,7 +121,7 @@ describe("§3.2 降级表:这是整个项目唯一的安全保证", () => {
   });
 });
 
-describe("多条 Action 取最严(§7)", () => {
+describe("多条 Action 取最严", () => {
   test("deny > ask > allow", () => {
     expect(strictest("allow", "deny")).toBe("deny");
     expect(strictest("ask", "allow")).toBe("ask");
@@ -159,14 +153,13 @@ describe("多条 Action 取最严(§7)", () => {
 });
 
 // ===========================================================================
-describe("缓存(§3.1)", () => {
+describe("缓存", () => {
   test("同一个 Action 第二次命中缓存,source === cache", () => {
     const a = action("exec", { command: "bun test" });
     const first = decideAction(a);
     const second = decideAction(a);
     expect(first.source).not.toBe("cache");
     expect(second.source).toBe("cache");
-    // 结论必须一致
     expect(second.verdict).toBe(first.verdict);
   });
 
@@ -247,7 +240,7 @@ describe("缓存(§3.1)", () => {
 });
 
 // ===========================================================================
-describe("§5 模型层接口(M2)", () => {
+describe("模型层接口", () => {
   test("★ HARD_DENY 根本不问模型(不会 await 一个危险命令)", async () => {
     let asked = false;
     const spy: ModelBackend = {
@@ -274,7 +267,7 @@ describe("§5 模型层接口(M2)", () => {
     expect(d.verdict).toBe("deny");
   });
 
-  test("★ PASS 也不问模型(§5.4:规则层判 allow / deny 直接返回)", async () => {
+  test("★ PASS 也不问模型(规则层判 allow / deny 直接返回)", async () => {
     let asked = false;
     const spy: ModelBackend = {
       name: "local",
@@ -290,7 +283,7 @@ describe("§5 模型层接口(M2)", () => {
     expect(asked).toBe(false);
   });
 
-  test("模型可用时 SOFT 可以被推翻(这是 M2 存在的意义)", async () => {
+  test("模型可用时 SOFT 可以被推翻", async () => {
     const d = await decideActionAsync(
       action("unknown", { command: "$(echo rm) -rf /" }),
       { backend: new FixedBackend("allow", 0.83), noCache: true },
@@ -330,7 +323,7 @@ describe("§5 模型层接口(M2)", () => {
     expect(seen!.context.repo).toBeDefined();
   });
 
-  test("★ 模型抛异常 → 按 §3.2 降级到 ask,不向上抛,confidence 0", async () => {
+  test("★ 模型抛异常 → 降级到 ask,不向上抛,confidence 0", async () => {
     const broken: ModelBackend = {
       name: "cloud",
       timeoutMs: 200,
@@ -383,7 +376,7 @@ describe("§5 模型层接口(M2)", () => {
     expect(d.modelDetails).toEqual({ backend: "cloud", error: "rejected", http_status: 429 });
   });
 
-  test("★ 没配后端(null)= M1 行为:SOFT → ask,source fallback,confidence null", async () => {
+  test("★ 没配后端(null)= 纯规则:SOFT → ask,source fallback,confidence null", async () => {
     const d = await decideActionAsync(action("unknown", { command: "$(x)" }), { backend: null, noCache: true });
     expect(d.verdict).toBe("ask");
     expect(d.source).toBe("fallback");
@@ -428,7 +421,7 @@ describe("§5 模型层接口(M2)", () => {
   });
 });
 
-describe("§12 核心论点,走完整管线", () => {
+describe("核心场景(正例 + 反例),走完整管线", () => {
   test("★ 同一条 rm -rf ./build:普通目录 allow,软链接指向外面 ask", () => {
     // —— 场景 A:./build 是普通目录
     const repoA = join(root, "case-a");
@@ -586,10 +579,9 @@ describe("§12 核心论点,走完整管线", () => {
 });
 
 // ===========================================================================
-describe("enrich 排在 rules 之后(§3)", () => {
+describe("enrich 排在 rules 之后", () => {
   test("★ pre 轮判死的命令不触发文件系统探测", () => {
-    // 给一个绝对不存在、探测必然失败的 cwd —— 如果管线还是去探测了,
-    // 会有 syscall;这里通过"cwd 不存在仍然正常 deny"间接验证路径没被用上。
+    // cwd 不存在,探测必然失败;仍然正常 deny,间接说明没走到探测
     const a = action("delete", {
       command: "rm -rf /",
       targets: [{ kind: "file", raw: "/" }],
@@ -597,7 +589,7 @@ describe("enrich 排在 rules 之后(§3)", () => {
     });
     const d = decideAction(a);
     expect(d.verdict).toBe("deny");
-    // reason 来自 pre 轮那条规则,说明确实在探测之前就返回了
+    // rule_id 来自 pre 轮那条规则,说明在探测之前就返回了
     expect(d.rule_id).toBe("fs.rm_root");
   });
 
@@ -614,13 +606,13 @@ describe("enrich 排在 rules 之后(§3)", () => {
     });
     const d = decideAction(a);
     expect(d.verdict).toBe("allow");
-    expect(d.source).toBe("rule"); // PASS 是规则层的结论,不是降级(D14.18)
+    expect(d.source).toBe("rule"); // PASS 是规则层的结论,不是降级
   });
 });
 
 // ===========================================================================
 describe("decideAll:多 Action 取最严", () => {
-  test("空的 Action 列表 → allow(§15.3 的约定)", () => {
+  test("空的 Action 列表 → allow(没有要裁决的东西)", () => {
     const r = decideAll([]);
     expect(r.decision.verdict).toBe("allow");
     expect(r.winningIndex).toBe(-1);
@@ -659,7 +651,7 @@ describe("decideAll:多 Action 取最严", () => {
 });
 
 // ===========================================================================
-describe("Decision 的形状(§2.3)", () => {
+describe("Decision 的形状", () => {
   test("allow 时 reason 为空字符串", () => {
     const d = decideAction(action("exec", { command: "bun test" }));
     expect(d.verdict).toBe("allow");
@@ -675,7 +667,7 @@ describe("Decision 的形状(§2.3)", () => {
     expect(ask.reason.length).toBeGreaterThan(0);
   });
 
-  test("confidence 在 M1 恒为 null", () => {
+  test("规则层的结论 confidence 为 null", () => {
     const d = decideAction(action("exec", { command: "echo hi" }));
     expect(d.confidence).toBeNull();
   });
@@ -693,7 +685,7 @@ describe("Decision 的形状(§2.3)", () => {
 });
 
 // ===========================================================================
-describe("D12.3 Context 随决策带出(§9 的日志要记它)", () => {
+describe("Context 随决策带出(日志要记它)", () => {
   test("★ PASS 的决策带完整 Context;pre 轮判死时为 null", () => {
     const repo = join(root, "ctx-case");
     mkdirSync(join(repo, ".git"), { recursive: true });
@@ -717,7 +709,7 @@ describe("D12.3 Context 随决策带出(§9 的日志要记它)", () => {
       { noCache: true },
     );
     expect(deny.decision.verdict).toBe("deny");
-    // §4.3:pre 轮判死不探测,没有 Context 可记 —— 这是 D11.1 允许 null 的唯一场合
+    // pre 轮判死不探测,没有 Context 可记 —— 这是 context 为 null 的唯一场合
     expect(deny.context).toBeNull();
   });
 
@@ -754,8 +746,8 @@ describe("D12.3 Context 随决策带出(§9 的日志要记它)", () => {
 });
 
 // ===========================================================================
-describe("★ 审计修订的两条真实漏判,走适配器的生产路径", () => {
-  test("D12.1 没有 origin/HEAD 的仓库里强推 → ask,不是 allow", () => {
+describe("★ 两条真实漏判的回归,走适配器的生产路径", () => {
+  test("没有 origin/HEAD 的仓库里强推 → ask,不是 allow", () => {
     const repo = join(root, "no-origin-head");
     mkdirSync(join(repo, ".git", "refs", "heads"), { recursive: true });
     writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
@@ -767,12 +759,12 @@ describe("★ 审计修订的两条真实漏判,走适配器的生产路径", ()
     }
   });
 
-  test("D12.2 echo k >> ~/.ssh/authorized_keys 经解析层是 exec,仍然 deny", () => {
+  test("echo k >> ~/.ssh/authorized_keys 经解析层是 exec,仍然 deny", () => {
     const acts = toActions(
       { tool_name: "Bash", tool_input: { command: "echo k >> ~/.ssh/authorized_keys" }, cwd: root },
       "t",
     );
-    expect(acts[0]?.verb).toBe("exec"); // D2.5:verb 跟左边的命令走
+    expect(acts[0]?.verb).toBe("exec"); // verb 跟左边的命令走
     const d = decideAll(acts, { noCache: true }).decision;
     expect(d.verdict).toBe("deny");
     expect(d.rule_id).toBe("fs.credential_write");
@@ -788,15 +780,11 @@ describe("★ 审计修订的两条真实漏判,走适配器的生产路径", ()
 });
 
 // ===========================================================================
-// §12 golden:tests/golden/cases.yaml
+// golden:tests/golden/cases.yaml
 //
-// 每条用例在自己的临时目录里跑,**走完整生产路径**:hook 输入 → 适配器
-// (toActions)→ 管线(decideAll)。不手写 Action —— 审计时两条漏判
-// (D12.2、D12.10)都藏在"手写 verb 绕过了解析层"的测试后面。
-//
-// rule_verdict 直接读规则段的结论(Decided.ruleVerdict),不再由 verdict 反推
-// (D13.2 预告的那次改动)。golden 走同步入口,不问模型:它测的是规则层与解析层,
-// 模型层有自己的 mock 测试。
+// 每条用例在自己的临时目录里走完整生产路径:hook 输入 → 适配器(toActions)→ 管线(decideAll)。
+// 不手写 Action:手写 verb 会绕过解析层,把漏判藏起来。
+// rule_verdict 直接读规则段的结论(Decided.ruleVerdict)。golden 走同步入口不问模型,模型层有自己的 mock 测试。
 
 interface GoldenCase {
   readonly id: string;
@@ -821,8 +809,8 @@ const GOLDEN: readonly GoldenCase[] = Bun.YAML.parse(
 ) as GoldenCase[];
 
 
-describe("§12 golden(tests/golden/cases.yaml)", () => {
-  test("用例文件:非空、id 唯一、每条覆盖 §12 要求的字段", () => {
+describe("golden(tests/golden/cases.yaml)", () => {
+  test("用例文件:非空、id 唯一、每条带齐必需字段", () => {
     expect(GOLDEN.length).toBeGreaterThanOrEqual(20);
     const ids = GOLDEN.map((c) => c.id);
     expect(new Set(ids).size).toBe(ids.length);
@@ -861,7 +849,7 @@ describe("§12 golden(tests/golden/cases.yaml)", () => {
         expect(result.perAction[result.winningIndex]?.action.verb, "verb").toBe(e.verb);
       }
       expect(result.decision.verdict, "verdict").toBe(e.verdict);
-      // 零条 Action 没有规则段(§15.3 的约定:没有要裁决的东西 = allow),按 PASS 记
+      // 零条 Action 没有规则段(没有要裁决的东西 = allow),按 PASS 记
       const ruleVerdict = result.perAction[result.winningIndex]?.ruleVerdict ?? "PASS";
       expect(ruleVerdict, "rule_verdict").toBe(e.rule_verdict);
       if (e.rule_id !== undefined) expect(result.decision.rule_id, "rule_id").toBe(e.rule_id);
@@ -879,7 +867,7 @@ describe("§12 golden(tests/golden/cases.yaml)", () => {
 });
 
 // ===========================================================================
-describe("★ D12.11 越界写不存在的目标(真实 fs,走适配器)", () => {
+describe("★ 越界写不存在的目标(真实 fs,走适配器)", () => {
   function mkRepo(name: string): { repo: string; outside: string } {
     const repo = join(root, name);
     mkdirSync(join(repo, ".git"), { recursive: true });
@@ -897,46 +885,46 @@ describe("★ D12.11 越界写不存在的目标(真实 fs,走适配器)", () =>
   }
 
   test("cp 写一个不存在的外部目标 → ask", () => {
-    const { repo, outside } = mkRepo("d1211-cp");
+    const { repo, outside } = mkRepo("oob-cp");
     const d = bash(`cp key ${join(outside, "new")}`, repo);
     expect(d.verdict).toBe("ask");
     expect(d.rule_id).toBe("fs.outside_cwd");
   });
 
   test("★ 重定向写外部(verb 是 exec)→ ask", () => {
-    const { repo, outside } = mkRepo("d1211-redir");
+    const { repo, outside } = mkRepo("oob-redir");
     const d = bash(`echo x > ${join(outside, "evil")}`, repo);
     expect(d.verdict).toBe("ask");
     expect(d.rule_id).toBe("fs.outside_cwd");
   });
 
   test("Write 工具写 cwd 外的新文件 → ask", () => {
-    const { repo } = mkRepo("d1211-write");
+    const { repo } = mkRepo("oob-write");
     const d = tool("Write", { file_path: "../sibling-new", content: "x" }, repo);
     expect(d.verdict).toBe("ask");
   });
 
   test("★ 反向:Write 工具在 cwd 内新建文件 → allow(不误拦)", () => {
-    const { repo } = mkRepo("d1211-write-in");
+    const { repo } = mkRepo("oob-write-in");
     expect(tool("Write", { file_path: "./src/new.ts", content: "x" }, repo).verdict).toBe("allow");
     expect(bash("echo x > ./src/new2.ts", repo).verdict).toBe("allow");
   });
 
   test("★ 反向:删一个不存在的东西(内外都)→ allow(空操作无害)", () => {
-    const { repo, outside } = mkRepo("d1211-del");
+    const { repo, outside } = mkRepo("oob-del");
     expect(bash("rm -rf ./nope", repo).verdict).toBe("allow");
     expect(bash(`rm -rf ${join(outside, "nope")}`, repo).verdict).toBe("allow");
   });
 
   test("★ 反向:读一个不存在的外部文件 → allow", () => {
-    const { repo, outside } = mkRepo("d1211-read");
+    const { repo, outside } = mkRepo("oob-read");
     expect(tool("Read", { file_path: join(outside, "nope") }, repo).verdict).toBe("allow");
   });
 });
 
 // ===========================================================================
-describe("★ 复合语句里逐字相同的段:批内复用,不撞缓存、不重复问模型(D14.19)", () => {
-  // 适配器给每个 exec 段填的 command 都是整条原文,所以两段 Action 逐字相同(D14.15 第 5 条)
+describe("★ 复合语句里逐字相同的段:批内复用,不撞缓存、不重复问模型", () => {
+  // 适配器给每个 exec 段填的 command 都是整条原文,所以两段 Action 逐字相同
   const cmd = "sudo systemctl stop nginx && sudo systemctl start nginx";
 
   test("同步批:两段相同的 PASS 首次请求都是 rule 而不是 cache,decision_id 不同,缓存只占一条", () => {

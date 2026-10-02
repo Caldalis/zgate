@@ -1,4 +1,4 @@
-// spec-m3 §2 —— 策略加载器。真实文件系统(D7.10),不 mock。
+// 策略加载器。真实文件系统,不 mock。
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -99,7 +99,7 @@ describe("大小上限", () => {
   });
 });
 
-describe("scope 解析(§2.2)", () => {
+describe("scope 解析", () => {
   test("前导空白、./ 与尾 / 归一化,按出现顺序,重复去掉", () => {
     const { scope, warnings } = parseScope(SAMPLE + "scope: migrations\n", "/r");
     expect(scope.map((s) => s.entry)).toEqual(["migrations", "config/production", "infra", "prod-db.internal"]);
@@ -148,7 +148,7 @@ describe("scope 解析(§2.2)", () => {
   });
 });
 
-describe("缓存与警告去重(§2.4)", () => {
+describe("缓存与警告去重", () => {
   test("3 秒内同 root 复用:改了文件立刻再读还是旧 sha;clearPolicyCache 后是新的", () => {
     const dir = repo("scope: a\n");
     const first = loadPolicy(dir)!;

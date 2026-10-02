@@ -1,6 +1,4 @@
-// SPEC.md §15.1 — 冻结类型(schema + 派生类型)的序列化测试。
-//
-// 这一层的测试重点不是业务逻辑,而是:
+// 核心类型(schema + 派生类型)的序列化测试:
 //   1. 字段名必须是 snake_case(线格式 = journal 格式,下游是 Python)
 //   2. 序列化 / 反序列化往返不丢信息
 //   3. 类型层面的只读约束真的生效
@@ -62,7 +60,7 @@ function makeDecision(): Decision {
   });
 }
 
-describe("frozen types: parse + round-trip", () => {
+describe("core types: parse + round-trip", () => {
   test("Action round-trips through JSON with no loss", () => {
     const action = makeAction();
     const wire = JSON.stringify(action);
@@ -111,7 +109,7 @@ describe("frozen types: parse + round-trip", () => {
   });
 });
 
-describe("frozen types: snake_case is load-bearing", () => {
+describe("core types: snake_case is load-bearing", () => {
   test("serialized keys are snake_case, never camelCase", () => {
     const wire = JSON.stringify({
       action: makeAction(),
@@ -164,7 +162,7 @@ describe("frozen types: snake_case is load-bearing", () => {
   });
 });
 
-describe("frozen types: rejection at the boundary", () => {
+describe("core types: rejection at the boundary", () => {
   test("unknown verb is rejected", () => {
     expect(ActionSchema.safeParse({ ...makeAction(), verb: "DROP" }).success).toBe(false);
   });
@@ -192,8 +190,7 @@ describe("frozen types: rejection at the boundary", () => {
   });
 
   test("a missing nullable key is NOT the same as null — it is rejected", () => {
-    // 冻结契约里 version/session_id 是 nullable 而非 optional。
-    // 适配器必须显式给 null,不允许省略。
+    // version / session_id 是 nullable 而非 optional:适配器必须显式给 null,不允许省略。
     expect(
       ActionSchema.safeParse({
         ...makeAction(),
@@ -213,16 +210,9 @@ describe("frozen types: rejection at the boundary", () => {
   });
 });
 
-describe("frozen types: compile-time immutability", () => {
-  // 只读是编译期契约,运行时对象故意不加 Object.freeze(§2.1 热路径开销)。
-  // 所以这里测的是「编译器接受 / 拒绝哪些写入」,不是运行时拦截。
-  //
-  // 实测结论(§2.1 的 Readonly 只保护第一层):
-  //   ✅ 被拦:Action 的 verb / targets / agent …,Context 的 resources / repo,
-  //           Decision 的 verdict …
-  //   ❌ 不拦:Readonly<T> 是浅的 —— c.repo.branch、c.repo.is_repo 这类
-  //           嵌套对象的字段可以随便写;zod v4 的 z.array 推出的也是可变数组,
-  //           所以 action.targets 可以 push。
+describe("core types: compile-time immutability", () => {
+  // 只读是编译期约束,运行时故意不加 Object.freeze(热路径开销),所以这里测的是编译器拒绝哪些写入。
+  // Readonly<T> 是浅的:顶层字段被拦;c.repo.branch 这类嵌套字段可以写,z.array 推出的数组也可以 push。
   // 兜底靠约定:已构造出的 Action / Context / Decision 不得被原地修改。
   function assertTopLevelReadonly(a: Action, c: Context, d: Decision): void {
     // @ts-expect-error Action 顶层字段是只读的
@@ -245,9 +235,7 @@ describe("frozen types: compile-time immutability", () => {
     const decision = makeDecision();
     assertTopLevelReadonly(action, ctx, decision);
 
-    // 上面的写入被编译器拒绝,但 JS 运行时会照样执行 —— 只读只是类型层约定,
-    // 没有运行时拦截。所以这些断言看到的是「真被改了」:
-    // 结论是 §2.1 的不可变性靠调用方守约,不靠运行时。
+    // 上面的写入被编译器拒绝,但运行时照样执行:不可变性靠调用方守约,不靠运行时。
     expect(action.verb).toBe("read");
     expect(ctx.resources.length).toBe(0);
     expect(ctx.repo.branch).toBe("other");

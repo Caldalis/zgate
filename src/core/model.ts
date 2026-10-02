@@ -1,13 +1,5 @@
-// SPEC.md §5.1 —— 模型层接口。
-//
-// 管线只认这个接口:拿到一个 ModelBackend 就问,拿到 null 就按 §3.2 右列走。
-// 后端选哪个、怎么配,全在 src/model/index.ts 的工厂里;管线代码里不出现
-// 任何具体后端的名字。
-//
-// 与 §5.1 字面的两处差别(见 DECISIONS D14.1):
-//   - classify 的第一个参数是 ModelRequest 而不是 (action, context):prompt 需要
-//     规则层命中的 rule_id(§5.2 A.5 的 flagged_rule),M3 的策略文本也要从这里进
-//   - confidence 允许 null:云端不算置信度(§5.2 B.3)
+// 模型层接口。管线只认 ModelBackend:拿到就问,拿到 null 就只用规则层的结论。
+// 后端选哪个、怎么配,全在 src/model/index.ts 的工厂里,管线代码里不出现具体后端的名字。
 
 import { z } from "zod";
 
@@ -18,23 +10,23 @@ import type { Policy } from "../policy.ts";
 export const BACKEND_NAMES = ["local", "cloud", "chain"] as const;
 export type BackendName = (typeof BACKEND_NAMES)[number];
 
-/** §3.2:统一封顶 5000ms(Claude Code hook 超时)。 */
+/** 统一封顶 5000ms(Claude Code hook 的超时)。 */
 export const MODEL_TIMEOUT_CAP_MS = 5000;
 
-/** 模型只在这两者间选,不返回 deny(§5.1)。 */
+/** 模型只在这两者间选,不返回 deny。 */
 export type ModelVerdict = "allow" | "ask";
 
-/** journal 顶层的 `model_details`(§9 的可选扩展,字段 snake_case)。 */
+/** journal 顶层的可选字段 `model_details`(snake_case)。 */
 export const ModelDetailsSchema = z.object({
   backend: z.enum(BACKEND_NAMES),
   model_name: z.string().optional(),
   local_latency_ms: z.number().optional(),
   cloud_latency_ms: z.number().optional(),
   escalated: z.boolean().optional(),
-  // chain 升级后最终裁决是云端的,本地那次的答案单独留着,M4 才能算"云端推翻了本地多少次"
+  // chain 升级后最终裁决是云端的,本地那次的答案单独留着,事后才能算"云端推翻了本地多少次"
   local_verdict: z.enum(["allow", "ask"]).optional(),
   local_confidence: z.number().optional(),
-  /** 模型段失败的原因;有它就说明这条是 §3.2 的降级。rejected = HTTP 4xx(含 429) */
+  /** 模型段失败的原因;有它就说明这条是降级。rejected = HTTP 4xx(含 429) */
   error: z.enum(["timeout", "unreachable", "rejected", "format"]).optional(),
   http_status: z.number().optional(),
   /** 云端为拿到合法格式实际生成的次数;只在 > 1 时写 */
@@ -42,7 +34,7 @@ export const ModelDetailsSchema = z.object({
 });
 export type ModelDetails = Readonly<z.infer<typeof ModelDetailsSchema>>;
 
-/** 随请求附上的仓库策略(spec-m3 §4):文本进 system 前缀,命中的 scope 条目进 user JSON。 */
+/** 随请求附上的仓库策略:文本进 system 前缀,命中的 scope 条目进 user JSON。 */
 export interface PolicyAttachment {
   readonly policy: Policy;
   readonly scopeHit: readonly string[];
@@ -55,7 +47,7 @@ export interface ModelRequest {
   readonly flaggedRule: string | null;
   /**
    * 由管线决定:只在 flaggedRule === "policy.scope"(这条调用是 SOFT 仅仅因为策略)时非 null。
-   * 其余 SOFT 的 prompt 与 M2 逐字节相同,策略文本不在模型输入里(spec-m3 §1 第 3 条)。
+   * 其余 SOFT 的策略文本不进模型输入,prompt 与无策略时逐字节相同。
    */
   readonly policy: PolicyAttachment | null;
 }
@@ -72,7 +64,7 @@ export interface ModelBackend {
   readonly name: BackendName;
   /** 管线给这次 classify 的总预算(ms),从配置来 */
   readonly timeoutMs: number;
-  /** 超时 / 不可达 / 格式错误一律抛异常,管线按 §3.2 降级 */
+  /** 超时 / 不可达 / 格式错误一律抛异常,由管线降级 */
   classify(req: ModelRequest, signal: AbortSignal): Promise<ModelDecision>;
 }
 
@@ -81,7 +73,7 @@ export class ModelFormatError extends Error {
   override readonly name = "ModelFormatError";
 }
 
-/** HTTP 非 2xx。status 决定重不重试(§5.2 B.2)。 */
+/** HTTP 非 2xx。status 决定重不重试。 */
 export class ModelHttpError extends Error {
   override readonly name = "ModelHttpError";
   constructor(readonly status: number, message: string) {
@@ -94,8 +86,8 @@ export function isAbortError(err: unknown): boolean {
 }
 
 /**
- * 在 parent 之上再加一个 ms 的期限。§3.2:用 AbortController,不用 Promise.race
- * 泄漏请求 —— fn 拿到的 signal 到期就 abort,fetch 会真的断开。
+ * 在 parent 之上再加一个 ms 的期限。用 AbortController 而不是 Promise.race:
+ * fn 拿到的 signal 到期就 abort,fetch 会真的断开,不泄漏请求。
  */
 export async function withDeadline<T>(
   parent: AbortSignal | null,

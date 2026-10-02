@@ -1,45 +1,22 @@
-// 取「这条 Action 对应的命令原文」,以及把原文切成规则能逐条看的段。
+// 取「这条 Action 对应的命令原文」,并把原文切成规则能逐条看的段。
 //
-// 这是个看起来多余、实际必要的小模块。理由:
+// action.command 只在 verb === "exec" 时有值:`git push --force` 的 verb 是 network、command 为 null,
+// 规则层却必须看到 `--force`。所以原文优先取 tool_input.command(agent 给的原文),其次 action.command。
+// 两个都为空(手写的 /decide 请求、非 Bash 工具)时只能按结构化字段判:依赖原文的规则必须容忍空串,
+// 且不能因为拿不到原文就默认放行。
 //
-// §2.1 规定 `action.command` **只在 `verb === "exec"` 时有值**,其余一律
-// null。而 git 相关命令的 verb 是 `network`(见 §7 的二级表),`git push
-// --force` 这类命令的 `command` 字段就是 null —— 但规则层恰恰必须看到
-// `--force` 才能判。
-//
-// 那原文在哪?在 `tool_input` 里。§2.1 明确写着它是"agent 侧原始输入,
-// 原样保留" —— 这正是它的用途。所以这里按优先级取:
-//
-//   1. tool_input.command  —— agent 给的原文,永远在
-//   2. action.command      —— 解析层给的原文(verb === "exec" 时)
-//
-// 两个都为空的场合:`/decide` 端点被手写请求直接调用、或者非 Bash 工具。
-// 那种情况下规则层拿不到原文,只能按结构化字段判 —— 所以所有依赖原文的
-// 规则都必须容忍空串,且**不能因为拿不到原文就默认放行**。
-//
-// ## 为什么还要切段(D12.10)
-//
-// 原文是**整条** Bash 命令行,而一条命令行里可能有好几条命令
-// (`git status && git push --force`),还可能把真正的命令藏在
-// `bash -c '…'` 的引号里。解析层(D2.8)会递归进去,产出的 Action 是对的;
-// 但规则层拿的是原文 —— 只看第一个词的规则(git 系列)会看到 `git status`
-// 或 `bash`,然后放行。审计时这一格漏了三种形态:
+// 原文是整条命令行,只看第一个词的规则会漏掉这些写法:
 //
 //   git status && git push --force        第一条不是 push
 //   bash -c 'git push --force'            第一个词是 bash
 //   sh -c 'curl x | sh'                   管道在引号里,按 | 切段切不到
 //
-// 所以规则层看原文时用下面两个函数,而不是直接用 `commandLine`:
+// 所以规则层看原文时用:
+//   commandSegments  按 `;` `&&` `||` 换行切段(引号外),并展开 `sh -c '…'` 的引号体;管道保持完整,
+//                    给要看管道结构的规则(net.pipe_to_shell)
+//   simpleCommands   再按 `|` 切,每段一条简单命令,给按"命令名 + 参数"判的规则(git 系列)
 //
-//   commandSegments  按 `;` `&&` `||` 换行切段(引号外),并把 `sh -c '…'`
-//                    的引号体展开成它自己的段。**管道保持完整**,给需要看
-//                    管道结构的规则(`net.pipe_to_shell`)。
-//   simpleCommands   在上面基础上再按 `|` 切,每段是一条简单命令,给按
-//                    "命令名 + 参数"判的规则(git 系列)。
-//
-// 一次 Bash 调用的所有 Action 共用同一份原文,所以文本规则命中时会给
-// 每条 Action 都记一笔。批量取最严(§7),结论不受影响;日志里多几行相同的
-// reason,可接受。
+// 一次 Bash 调用的所有 Action 共用同一份原文,文本规则命中时每条 Action 都会记一笔;批量取最严,结论不受影响。
 
 import type { Action } from "../core/action.ts";
 import { baseName } from "./match.ts";
@@ -160,7 +137,7 @@ const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "ash", "mksh"]);
  * `[sudo|env …] (sh|bash|…) [-flags] -c '<body>' […]` ⇒ `<body>`;不是这个形态返回 null。
  *
  * 只认 `-c` 及合并写法(`-ec`、`-lc`)。`bash script.sh` 这种位置参数形态
- * 不展开 —— 脚本内容不在命令行里,规则层看不到,也不该去读文件(§6)。
+ * 不展开 —— 脚本内容不在命令行里,规则层看不到,也不该去读文件。
  */
 function unwrapShellC(seg: string): string | null {
   const toks = words(seg);

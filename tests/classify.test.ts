@@ -1,11 +1,5 @@
-// SPEC.md §7 —— 「命令语义」层的测试。
-//
-// 这一层单独测的价值:它是 shell.ts 唯一的语义依赖点。
-// 以后换 AST,换的是 shell.ts,本文件的断言必须一条不改地继续通过 ——
-// 那就是"分层成功"的可执行定义。
-//
-// 另一个价值:以前这些断言混在 shell.test.ts 里,要靠构造完整命令行
-// 才能测到「git push 算什么 verb」。现在可以直接喂 (命令名, 参数)。
+// 「命令语义」层(classify.ts)的测试:直接喂 (命令名, 参数),不用构造完整命令行。
+// 手写版和 AST 版共用这一层,换解析器时这里的断言应当一条不改地继续通过。
 
 import { describe, expect, test } from "bun:test";
 import {
@@ -20,7 +14,7 @@ import {
   type ClassifyToken,
 } from "../src/shell/classify.ts";
 
-/** 把 ["-rf", "x"] 这样写法的参数变成 token;用 `-` 前缀自动标成未引用 */
+/** 把 ["-rf", "x"] 这样写法的参数变成未引用的 token */
 function toks(...args: string[]): ClassifyToken[] {
   return args.map((text) => ({ text, quoted: false }));
 }
@@ -63,7 +57,7 @@ describe("classify: 五类裁决", () => {
     expect(classifyCommand("curl", toks("https://x"))).toMatchObject({ kind: "cmd", verb: "network" });
   });
 
-  test("表外可执行文件 → exec(§7)", () => {
+  test("表外可执行文件 → exec", () => {
     expect(classifyCommand("frobnicate", toks("--all"))).toEqual({ kind: "exec" });
     expect(classifyCommand("/usr/local/bin/weird", toks())).toEqual({ kind: "exec" });
   });

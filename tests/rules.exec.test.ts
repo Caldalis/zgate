@@ -1,4 +1,4 @@
-// D15.10 —— 命令本身对外部系统的破坏、未展开的目标、非 Bash 工具。走完整生产路径(toActions → 管线,noCache)。
+// 命令本身对外部系统的破坏、未展开的目标、非 Bash 工具。走完整生产路径(toActions → 管线,noCache)。
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,7 +51,7 @@ describe("simpleCommandHead / operandsOf", () => {
   });
 });
 
-describe("★ 这些命令今天全是 PASS,模型一条都看不到(D15.9);现在到规则层为 SOFT", () => {
+describe("★ 这些命令在规则层判 SOFT:判 PASS 就直接放行,模型一条都看不到", () => {
   const CASES: readonly [string, string][] = [
     ["psql -h prod-db.internal -U app -c 'drop table users'", "exec.db_destructive"],
     ["psql -c 'drop database app'", "exec.db_destructive"],
@@ -157,7 +157,7 @@ describe("★ 反向断言:这些日常命令一条都不许因为新规则变�
   });
 });
 
-describe("非 Bash 工具(D15.10)", () => {
+describe("非 Bash 工具", () => {
   test("没有可判动作的工具跳过:零条 Action,放行,不进日志", () => {
     for (const [tool, input] of [
       ["Agent", { prompt: "x", description: "d", subagent_type: "Explore" }], ["Task", { prompt: "x" }], ["Workflow", { script: "x" }],

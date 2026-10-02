@@ -1,9 +1,6 @@
-// SPEC.md §2.1 — 冻结契约。
+// Action:agent 的一次动作。HTTP 线格式与 journal 共用这份 schema,改字段会破坏兼容。
 //
-// 字段一律 snake_case:这份类型同时是 HTTP 线格式和 journal 格式,
-// 下游是 Python 工具链,统一 snake_case 意味着零映射层。
-// 不要改成 camelCase,不要加 case 转换中间层。
-//
+// 字段一律 snake_case:下游是 Python 工具链,统一 snake_case 就不需要映射层。
 // schema 是唯一事实来源,类型由 z.infer 派生。
 
 import { z } from "zod";
@@ -42,10 +39,6 @@ export const ActionSchema = z.object({
   turn_id: z.string(), // 本次决策唯一 id,由网关生成
 });
 
-// 不可变性用 TS 的 Readonly 表达(编译期,零运行时开销)。
-// 热路径不做 Object.freeze。
-//
-// 注意 Readonly<> 是浅的:targets 的元素是 Readonly<Resource>,
-// 但数组本身在类型上仍是可变的。深不可变要额外类型体操,M1 不值当,
-// 约定是:任何代码都不得原地改已构造出的 Action。
+// 不可变性只用 Readonly 在编译期表达,热路径不做 Object.freeze。
+// Readonly<> 是浅的,targets 数组在类型上仍可变;约定任何代码都不得原地改已构造出的 Action。
 export type Action = Readonly<z.infer<typeof ActionSchema>>;

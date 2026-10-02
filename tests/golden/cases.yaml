@@ -1,7 +1,7 @@
-# SPEC.md §12 —— golden test。由 tests/pipeline.test.ts 驱动。
+# golden 用例,由 tests/pipeline.test.ts 驱动。
 #
-# 每条用例在独立的临时目录里跑,走**完整生产路径**:hook 输入 → 适配器 → 管线。
-# 不手写 Action:审计时两条漏判(D12.2、D12.10)都藏在手写 verb 的测试后面。
+# 每条用例在独立的临时目录里跑,走完整生产路径:hook 输入 → 适配器 → 管线。
+# 不手写 Action:手写 verb 会绕过解析层,把漏判藏起来。
 #
 # 字段:
 #   setup.mkdir             要建的目录(相对用例根)
@@ -14,7 +14,7 @@
 #   expect.actions          Action 条数(可选)
 #   expect.verbs            全部 Action 的 verb,按序(可选)
 #   expect.verb             定结论那条 Action 的 verb(可选)
-#   expect.rule_verdict     HARD_DENY | SOFT | PASS(M1 与 verdict 一一对应,见驱动注释)
+#   expect.rule_verdict     HARD_DENY | SOFT | PASS(golden 不走模型,与 verdict 一一对应)
 #   expect.verdict          deny | ask | allow
 #   expect.rule_id          命中的规则(可选;allow 时恒为 null,不要写)
 #   expect.resolved_contains  某个目标 resolved 后含这个子串(可选)
@@ -85,7 +85,7 @@
     rule_id: git.force_push_into_default
 
 - id: force-push-default-branch-unknown
-  # 没有 origin/HEAD(git init 建的仓库)。不猜 main/master,但也绝不放行(D12.1)
+  # 没有 origin/HEAD(git init 建的仓库)。不猜 main/master,但也绝不放行
   setup:
     git: { dir: "repo", branch: "main" }
   cwd: "repo"
@@ -335,7 +335,7 @@
     rule_id: fs.credential_write
 
 - id: write-authorized-keys-via-redirect
-  # verb 是 exec(D2.5:重定向的 verb 跟左边的命令走),规则层从原文认重定向(D12.2)
+  # verb 是 exec(重定向的 verb 跟左边的命令走),规则层从原文认重定向
   setup: { mkdir: ["repo"] }
   cwd: "repo"
   tool: Bash
@@ -420,8 +420,7 @@
 # ── 8. 复合语句切分 ─────────────────────────────────────────────────────
 
 - id: cd-and-rm-splits
-  # §12 原文写的是"切分成两个 Action"。cd 是 shell 内建,按 D2.3 / D6.4 不产出
-  # Action,所以这里是 1 条 —— 切分成功由 rm 的目标是 b(而不是整条原文)证明。
+  # cd 是 shell 内建,不产出 Action,所以这里是 1 条 —— 切分成功由 rm 的目标是 b(而不是整条原文)证明。
   # 真正产出两条的写法见下一条。
   setup: { mkdir: ["repo", "repo/a", "repo/b"] }
   cwd: "repo"
@@ -505,7 +504,7 @@
     verdict: ask
 
 - id: fork-bomb
-  # 解析出零条命令,适配器兜成一条 unknown(D6.2),pre 轮按原文形态判死
+  # 解析出零条命令,适配器兜成一条 unknown,pre 轮按原文形态判死
   setup: { mkdir: ["repo"] }
   cwd: "repo"
   tool: Bash
@@ -543,7 +542,7 @@
     verdict: ask
     rule_id: fs.secret_file
 
-# ── §10 的工具映射边界 ──────────────────────────────────────────────────
+# ── 工具映射边界 ────────────────────────────────────────────────────────
 
 - id: task-tool-is-skipped
   setup: { mkdir: ["repo"] }
@@ -606,9 +605,9 @@
     rule_verdict: PASS
     verdict: allow
 
-# ── D12.11:越界写不存在的目标 ──────────────────────────────────────────
+# ── 越界写不存在的目标 ──────────────────────────────────────────────────
 # 写一个 cwd 外、还不存在的目标应该问一声(装 cron、拷密钥出去都是这个形态)。
-# 判据靠不存在路径的预期落点(fs.ts 的 projectPath),见 DECISIONS D12.11。
+# 判据靠不存在路径的预期落点(fs.ts 的 projectPath)。
 
 - id: write-nonexistent-outside-cwd-via-tool
   setup:
@@ -663,7 +662,7 @@
     rule_verdict: PASS
     verdict: allow
 
-# ── 补:后缀形式的 env 文件(D12.15 第 3 条漏判,D14.23 修)────────────────
+# ── 后缀形式的 env 文件 ─────────────────────────────────────────────────
 
 - id: read-prod-env-suffix-form
   setup:
@@ -692,7 +691,7 @@
     verdict: allow
 
 - id: append-env-via-echo-redirect
-  # verb 是 exec(echo),密钥文件只出现在重定向目的地里,也要问(D14.23)
+  # verb 是 exec(echo),密钥文件只出现在重定向目的地里,也要问
   setup:
     git: { dir: "repo", branch: "main" }
     write: { "repo/.env": "API_KEY=live\n" }
@@ -717,9 +716,9 @@
     rule_verdict: PASS
     verdict: allow
 
-# ── M3:策略即代码(spec-m3 §8.1)────────────────────────────────────────────
-# ★ 这两条是 M3 的核心论点对:同一条命令,仓库里有没有 .zgatepolicy,结论不同。
-# 地位等同第 1 组的软链接对:跑不出这个差异,M3 就不成立。
+# ── 策略即代码(.zgatepolicy)────────────────────────────────────────────
+# ★ 头两条是策略的核心论点对:同一条命令,仓库里有没有 .zgatepolicy,结论不同。
+# 地位等同第 1 组的软链接对:跑不出这个差异,策略就不成立。
 
 - id: rm-migrations-without-policy
   setup:
@@ -764,7 +763,7 @@
     rule_id: policy.scope
 
 - id: read-tool-in-policy-scope-passes
-  # 反例:read 不受 scope 约束(spec-m3 §0 第 5 项)
+  # 反例:read 不受 scope 约束
   setup:
     git: { dir: "repo", branch: "main" }
     write:
@@ -813,7 +812,7 @@
     resolved_contains: "migrations"
 
 - id: psql-prod-db-policy-text-match
-  # 没有文件目标的命令:靠命令原文的字面片段够到(spec-m3 §0 第 4 项)
+  # 没有文件目标的命令:靠命令原文的字面片段够到
   setup:
     git: { dir: "repo", branch: "main" }
     write: { "repo/.zgatepolicy": "别碰线上数据库。\nscope: prod-db.internal\n" }
@@ -883,8 +882,8 @@
     verdict: deny
     rule_id: fs.rm_root
 
-# ── D15.10:命令本身对外部系统的破坏;未展开的目标;非 Bash 工具 ──────────────
-# 规则层原本只认文件 / git / 网络三类形态,这一类整段 PASS,模型永远看不到。
+# ── 命令本身对外部系统的破坏;未展开的目标;非 Bash 工具 ──────────────────
+# 这类调用没有文件 / git / 网络形态,没有专门的规则就整段 PASS,模型永远看不到。
 
 - id: psql-drop-table-is-soft
   setup:
@@ -969,7 +968,7 @@
     verdict: allow
 
 - id: rm-unexpanded-variable-is-soft
-  # 解析层不展开变量,$DIR 被当成 cwd 里的字面路径,之前一路 PASS(fail-open)
+  # 解析层不展开变量,$DIR 会被当成 cwd 里的字面路径,不拦就一路 PASS(fail-open)
   setup:
     git: { dir: "repo", branch: "main" }
   cwd: "repo"

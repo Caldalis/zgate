@@ -1,4 +1,4 @@
-// SPEC.md §5.2 A —— LocalBackend,对 mock llama-server。
+// LocalBackend,对 mock llama-server。
 import { afterEach, describe, expect, test } from "bun:test";
 
 import { LocalBackend, confidenceOf } from "../../src/model/local.ts";
@@ -15,7 +15,7 @@ afterEach(() => {
 const backend = (url: string, timeout = 1000) => new LocalBackend({ base_url: url, timeout_ms: timeout, model_name: "test-9b" });
 const NO_ABORT = new AbortController().signal;
 
-describe("请求形状(§5.2 A 的七条要点)", () => {
+describe("请求形状", () => {
   test("走 /v1/chat/completions,system+user 两条消息,关 thinking,grammar 约束,cache_prompt", async () => {
     srv = mockServer(() => json(llamaResponse("ask", { allow: -2.9, ask: -0.06 })));
     await backend(srv.url).classify(request(), NO_ABORT);
@@ -70,7 +70,7 @@ describe("裁决与置信度", () => {
     expect(d.confidence).toBeCloseTo(1 / (1 + Math.exp(-1.15 + 0.38)), 6);
   });
 
-  test("★ 另一个词不在 top_logprobs 里 → 回落 §5.2 A.4 的强制续写(共 3 次调用)", async () => {
+  test("★ 另一个词不在 top_logprobs 里 → 回落强制续写(共 3 次调用)", async () => {
     srv = mockServer((seen, i) => {
       if (i === 0) return json(llamaResponse("ask", { ask: -0.06 })); // 只有自己
       const g = seen.body["grammar"];
@@ -104,7 +104,7 @@ describe("裁决与置信度", () => {
   });
 });
 
-describe("§3.2 的降级场景都以异常上报", () => {
+describe("降级场景都以异常上报", () => {
   test("★ 超时:signal 到期 fetch 被 abort,抛 TimeoutError", async () => {
     srv = mockServer(never);
     const b = backend(srv.url, 100);

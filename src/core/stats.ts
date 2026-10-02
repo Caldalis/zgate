@@ -1,7 +1,7 @@
-// spec-m4 §0 第 7 项 —— `zgate journal stats`:一眼看到飞轮转没转。
+// `zgate journal stats`:问了多少、多少被点了通过。
 //
 // 只数 verdict 为 ask 的行(问了的),按 rule_id × source 分组,列 outcome 的去向。
-// 不做别的分析:哪些行能当标注、要不要按 permission_mode 过滤,是 Python 侧的事(SPEC §16)。
+// 不做别的分析:哪些行能当标注、要不要按 permission_mode 过滤,留给 Python 侧。
 
 import type { ReplayedDecision } from "./journal.ts";
 
@@ -14,7 +14,7 @@ export interface StatsRow {
   readonly approved: number;
   /** approved 里工具执行失败的 */
   readonly approved_failed: number;
-  /** v1 的钩子不写 rejected,但 /outcome 外部可写,照数 */
+  /** Claude Code 的钩子推不出 rejected;opencode 的 replied 事件与外部 /outcome 会写 */
   readonly rejected: number;
   /** 会话结束或调用落定时仍没通过 */
   readonly unknown: number;

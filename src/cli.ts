@@ -1,18 +1,13 @@
-// SPEC.md §11 / §13 / §14 —— CLI。
+// CLI。
 //
 //   zgate serve             起 daemon
 //   zgate journal replay    把 JSONL 还原成可评测的结构
-//   zgate journal stats     问了多少、多少被点通过(spec-m4 §0 第 7 项)
+//   zgate journal stats     问了多少、多少被点通过
 //   zgate bench             跑 p50/p95/p99
 //   zgate check             判一次,把结论打出来(调试与一分钟验证用)
+//   zgate eval              拿人工标注的样本量模型
 //
-// `check` 不在 §11 的清单里,但 §14 要求 README 有"一分钟验证步骤",
-// 而验证的核心是"让网关判一条 `rm -rf ./build` 看看它说什么"。
-// 让用户为此写一个 curl 是可笑的,所以加这一个 —— 它是 §14 第 5 条
-// 的实现,不是范围扩大(见 D10.4)。
-//
-// 参数解析手写,不用库:§1 说依赖只允许 zod,而这里需要的东西
-// (`argv.slice(2)` + 几个 `--key value`)不值一个依赖。
+// 参数解析手写,不用库:依赖只有 zod,这里需要的(`argv.slice(2)` + 几个 `--key value`)不值一个依赖。
 
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,15 +42,15 @@ const USAGE = `zgate ${VERSION} — 本地 Agent 工具调用决策网关
 
   zgate journal replay [file]
       把一天的 JSONL 还原成 {action, context, decision, outcome} 数组。
-      不给文件名时用今天的。这是 M2 评测与 M4 训练数据的唯一入口。
+      不给文件名时用今天的。这是评测与训练数据的唯一入口。
 
   zgate journal stats [file] [--json]
       数一天的日志:问了多少次、多少被点通过(按 rule_id × source),看结果信号有没有接上。
 
   zgate eval [--cases FILE] [--json]
       拿 tests/eval/cases.yaml(21 条人工标注的 SOFT 样本)跑一遍配置里的模型,
-      打印一致率、该问却放行、误打断与延迟。这是 M2 数字的复现入口;
-      --cases tests/eval/policy.yaml 是 M3 的 10 条策略用例。
+      打印一致率、该问却放行、误打断与延迟。这是模型数字的复现入口;
+      --cases tests/eval/policy.yaml 是 10 条策略用例。
 
   zgate bench [--n N] [--json] [--http]
       跑 N 次混合请求,打印 p50/p95/p99。默认量进程内管线;
@@ -101,10 +96,7 @@ function flagString(args: Args, name: string, fallback: string): string {
 // serve
 // ---------------------------------------------------------------------------
 
-/**
- * 读 ~/.zgate/config.json 并建后端。§5.3:parse 失败拒绝启动 —— 这里把
- * ConfigError 转成 stderr 一行 + null,调用方退出码 1。
- */
+/** 读 ~/.zgate/config.json 并建后端。配置不合法拒绝启动:ConfigError 转成 stderr 一行 + null,调用方退出码 1。 */
 function loadBackend(): { config: Config; backend: ModelBackend | null } | null {
   try {
     const config = loadConfig();
@@ -149,7 +141,7 @@ function cmdServe(args: Args): number {
 }
 
 /**
- * Claude Code settings 片段(spec-m4 §0 第 6 项)。五种事件同一个 URL,server 按 hook_event_name 分派。
+ * Claude Code settings 片段。五种事件同一个 URL,server 按 hook_event_name 分派。
  * 工具类事件带 `matcher: ""`(每个工具都过);PostToolBatch 不支持 matcher,SessionEnd 不需要。
  * timeout 5:PreToolUse 超时不拦截(走 Claude Code 自己的权限流程);SessionEnd 默认预算只有 1.5 秒,写了 5 会把预算提到 5 秒。
  */
@@ -189,8 +181,7 @@ async function cmdCheck(args: Args): Promise<number> {
     process.stderr.write("zgate check 需要一条命令\n");
     return 2;
   }
-  // 用户可能写成 `zgate check rm -rf ./build`(不带引号),那时 shell 已经把
-  // 它切成多个 argv。拼回去比要求用户加引号友好。
+  // 不带引号的 `zgate check rm -rf ./build` 已被 shell 切成多个 argv,拼回去比要求用户加引号友好。
   const command = words.join(" ");
   const cwd = flagString(args, "cwd", process.cwd());
   const asJson = args.flags.get("json") === true;
@@ -220,7 +211,7 @@ async function cmdCheck(args: Args): Promise<number> {
   process.stdout.write(`cwd:${cwd}\n`);
   process.stdout.write(`策略:${describePolicy(cwd)}\n`);
   if (parsed === null) {
-    process.stdout.write("解析:失败(⇒ verb unknown ⇒ §4.2 兜底)\n");
+    process.stdout.write("解析:失败(⇒ verb unknown ⇒ 未知即 SOFT)\n");
   } else if (parsed.length === 0) {
     process.stdout.write("解析:成功,零条命令(⇒ 适配器兜成 unknown)\n");
   } else {
@@ -245,7 +236,7 @@ async function cmdCheck(args: Args): Promise<number> {
   return 0;
 }
 
-/** 一行策略状态(spec-m3 §6:check 打印一行就够,不做 `zgate policy` 子命令)。加载器的警告自己走 stderr。 */
+/** 一行策略状态:check 打印一行就够,不另做 `zgate policy` 子命令。加载器的警告自己走 stderr。 */
 function describePolicy(cwd: string): string {
   const root = gitFacts(cwd).root;
   if (root === null) return `cwd 不在 git 仓库里,不找 ${POLICY_FILENAME}`;
@@ -270,7 +261,7 @@ function cmdReplay(args: Args): number {
 }
 
 // ---------------------------------------------------------------------------
-// journal stats(spec-m4 §0 第 7 项)
+// journal stats
 // ---------------------------------------------------------------------------
 
 function cmdStats(args: Args): number {
@@ -308,10 +299,7 @@ function cmdStats(args: Args): number {
 // bench
 // ---------------------------------------------------------------------------
 
-/**
- * §13 的核心指标。**必须能一键复现** —— 所以这里的命令集是固定的,
- * 不读外部文件,不依赖当前目录的内容(除了一个真实存在的 cwd)。
- */
+/** 命令集固定:不读外部文件,不依赖 cwd 里有什么(只要它真实存在),结果才能一键复现。 */
 const BENCH_COMMANDS: readonly string[] = [
   "rm -rf ./build",
   "git status",
@@ -348,7 +336,7 @@ function summarize(xs: number[]): Summary {
   };
 }
 
-/** 两种模式共用的输出。返回值是退出码:§13 的两条预算任一不达即 1。 */
+/** 两种模式共用的输出。返回值是退出码:冷路径 p50 < 5ms、p99 < 30ms 任一不达即 1。 */
 function reportBench(
   mode: "pipeline" | "http",
   n: number,
@@ -368,7 +356,7 @@ function reportBench(
   process.stdout.write(`               p50      p95      p99      max\n`);
   process.stdout.write(`冷(无缓存) ${f(c.p50)} ${f(c.p95)} ${f(c.p99)} ${f(c.max)}   ms\n`);
   process.stdout.write(`热(带缓存) ${f(w.p50)} ${f(w.p95)} ${f(w.p99)} ${f(w.max)}   ms\n\n`);
-  process.stdout.write(`§13 预算:  p50 < 5ms   p99 < 30ms\n`);
+  process.stdout.write(`预算:      p50 < 5ms   p99 < 30ms\n`);
   process.stdout.write(`冷路径:    p50 ${c.p50 < 5 ? "✓" : "✗"}   p99 ${c.p99 < 30 ? "✓" : "✗"}\n`);
   if (mode === "pipeline") {
     process.stdout.write(`\n这是**进程内**管线耗时,不含 HTTP 与 body 解析;加 --http 量端到端。\n`);
@@ -408,12 +396,8 @@ function benchPipeline(n: number, cwd: string): { cold: Summary; warm: Summary }
 }
 
 /**
- * 端到端:在本进程起一个真的 daemon(端口 0),用 fetch 打
- * `/hook/claude-code`,body 就是 Claude Code 会发的那份。
- *
- * 日志写到临时目录 —— bench 的几千条决策不该混进 ~/.zgate/journal,
- * 那是训练数据。server 与 bench 在同一进程,所以"冷"仍然可以靠
- * `clearCache()` 实现,不需要额外的管理端点。
+ * 端到端:在本进程起一个真的 daemon(端口 0),用 fetch 打 `/hook/claude-code`,body 就是 Claude Code 会发的那份。
+ * 日志写到临时目录:bench 的几千条决策不该混进 ~/.zgate/journal。server 与 bench 同进程,"冷"仍靠 `clearCache()` 实现。
  */
 async function benchHttp(n: number, cwd: string): Promise<{ cold: Summary; warm: Summary }> {
   const dir = mkdtempSync(join(tmpdir(), "zgate-bench-journal-"));
@@ -504,7 +488,7 @@ async function cmdEval(args: Args): Promise<number> {
   const scratch = join(tmpdir(), "zgate-eval");
   rmSync(scratch, { recursive: true, force: true });
   try {
-    // 预热一次不计入:llama-server 刚起或换 slot 时首次调用常超时(D14.13)
+    // 预热一次不计入:llama-server 刚起或换 slot 时首次调用常超时
     const first = cases[0];
     if (backend !== null && first !== undefined) await runEvalCase(first, backend, scratch);
     const results: EvalResult[] = [];
@@ -548,14 +532,12 @@ async function cmdEval(args: Args): Promise<number> {
 // 入口
 // ---------------------------------------------------------------------------
 
-/** `check` 与 `bench --http` 是异步的(要 await 模型 / fetch);其余命令同步返回退出码。 */
+/** `check`、`eval` 与 `bench --http` 是异步的(要 await 模型 / fetch);其余命令同步返回退出码。 */
 export function main(argv: readonly string[]): number | Promise<number> {
   const args = parseArgs(argv);
   const cmd = args.positional[0];
 
-  // ★ 版本/帮助的判定必须在子命令**之前**:`zgate --version` 的
-  //   positional[0] 是 undefined,而 `zgate version` 的 flag 是空的 ——
-  //   两个入口都要能到得了这里。写反了会掉进 USAGE 分支(踩过)。
+  // 版本要在帮助之前判:`zgate --version` 的 positional[0] 是 undefined,先判帮助就会掉进 USAGE 分支。
   if (args.flags.has("version") || cmd === "version") {
     process.stdout.write(`${VERSION}\n`);
     return 0;

@@ -1,16 +1,10 @@
-// SPEC.md §7 —— 遍历层:AST → ShellCommand[]。
-//
-// 这是「结构」到「意图」的最后一跳。它做四件事:
+// 遍历层:AST → ShellCommand[]。
 //   1. 遍历树,把每个 command 节点变成一条 ShellCommand
 //   2. 摘重定向,把写目标追加到对应命令上
-//   3. 处理 §7 点名的逃逸口:`bash -c` 递归、`eval` 放弃、命令替换放弃
+//   3. 处理逃逸口:`bash -c` 递归、`eval` 放弃、命令替换放弃
 //   4. 遇到看不懂的东西返回 null(⇒ 上层落 unknown ⇒ SOFT)
 //
-// 与 index.ts(旧的手写路径)的关系:两者产出同一个 `ShellCommand[] | null`。
-// 差别在**怎么得到**:旧版是一次线性扫描 + 大量启发式补丁(认 fd 要看
-// "下一个 token 是不是以 > 开头"),这里是读树的结构。
-//
-// 命令语义(verb 是什么、哪些参数是目标)一律不在本层 —— 问 classify.ts。
+// 命令语义(verb 是什么、哪些参数是目标)不在本层,问 classify.ts。
 
 import { classifyCommand, classifyGit, extractTargets, findVerb, isAssignment, tarVerb } from "./classify.ts";
 import type { ResourceSpec } from "./classify.ts";
@@ -19,7 +13,7 @@ import { parse, walk } from "./ast.ts";
 import type { Token } from "./lex.ts";
 import { splitTopLevel, tokenize } from "./lex.ts";
 
-/** 一条命令的解析意图。与 index.ts 的 ShellCommand 同构。 */
+/** 一条命令的解析意图。与 legacy.ts 的 ShellCommand 同构。 */
 export interface ShellCommand {
   readonly verb: import("../core/action.ts").Verb;
   readonly targets: readonly ResourceSpec[];
@@ -34,7 +28,7 @@ const WRAPPERS = new Set([
   "builtin", "nice", "ionice", "stdbuf", "setsid", "exec",
 ]);
 
-/** 每个包装词自己的「吃值短选项」—— 与 classify.ts 的表同一份事实,这里独立一份 */
+/** 每个包装词自己的「吃值短选项」。与 legacy.ts 的同名表是同一份事实,两份实现各留一份 */
 const WRAPPER_VALUE_SHORT: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ["nice", new Set(["n"])],
   ["ionice", new Set(["c", "n", "p", "P", "u"])],
@@ -54,19 +48,12 @@ function basenameOf(head: string): string {
   return slash === -1 ? head : head.slice(slash + 1);
 }
 
-/**
- * 命令名得像命令 —— 不像就别硬猜(落 unknown 比落 exec 诚实)。
- *
- * `[` 和 `.` 要单列:它们是合法的内建命令名,但不符合"字母开头"的直觉。
- * `. ./env.sh`(source 的 POSIX 写法)以前因为 `.` 不过这一关而整条落 unknown。
- */
+/** 命令名得像命令,不像就别硬猜(落 unknown 比落 exec 诚实)。`[` 和 `.` 是合法的内建命令名,要单列。 */
 const LOOKS_LIKE_COMMAND = /^(?:\[|\.|[A-Za-z_:][A-Za-z0-9_.+-]*)$/;
 
 /**
- * 剥掉包装词。返回新的 head 下标;剥不下去返回 null。
- *
- * 和手写版一样:每个包装词有自己的选项表,不能用一张全局表。
- * `-n` 对 nice 吃值、对 rm 不吃值。
+ * 剥掉包装词,返回新的 head 下标;剥不下去返回 null。
+ * 每个包装词有自己的选项表,不能用一张全局表:`-n` 对 nice 吃值、对 rm 不吃值。
  */
 function peelWrappers(argv: readonly Token[], start: number): { head: number } | null {
   let i = start;
@@ -124,7 +111,7 @@ function peelWrappers(argv: readonly Token[], start: number): { head: number } |
  * 整条命令行 → 命令意图列表。
  *
  * - `[]`   没有需要裁决的部分
- * - `null` 没看懂(§4.2 兜底成 SOFT)
+ * - `null` 没看懂(上层兜底成 SOFT)
  */
 export function walkToCommands(command: string): ShellCommand[] | null {
   const segments = splitTopLevel(command);
@@ -137,9 +124,7 @@ export function walkToCommands(command: string): ShellCommand[] | null {
     if (tokens === null) return null;
 
     const { root, errors } = parse(tokens);
-    // 文法层面有错 ⇒ 整条放弃。这是 §4.2 的安全默认值,
-    // 也是 AST 版比手写版强的地方:错误是**结构里看得见的状态**,
-    // 不是散落在控制流里的返回值。
+    // 文法层面有错 ⇒ 整条放弃(安全默认值)
     if (errors.length > 0) return null;
 
     if (!ctx.collect(root, out, 0)) return null;
@@ -174,8 +159,7 @@ class WalkContext {
       case "else_clause":
         return this.collectChildren(node, out, depth);
 
-      // 函数定义体是**延迟执行** —— 声明时不产出 Action。
-      // 危险的内容由 §4.5 的 pre 规则对 raw command 做模式匹配兜住(见 D2.16)。
+      // 函数定义体是延迟执行,声明时不产出 Action;危险内容(如 fork bomb)由 pre 轮规则对原始命令做模式匹配兜住。
       case "function_definition":
         return true;
 
@@ -199,8 +183,7 @@ class WalkContext {
       }
 
       case "command": {
-        // 本命令产出的意图先落到临时数组,再统一挂上重定向目标 ——
-        // 这样 `echo hi > f` 的 f 和 `rm b &> f` 的 f 都不会丢
+        // 本命令产出的意图落进 out 之后再统一挂上重定向目标,`echo hi > f` 和 `rm b &> f` 的 f 都不会丢
         const before = out.length;
         if (!this.emitCommand(node, out, depth)) return false;
         if (this.pendingWrites.length > 0) {
@@ -243,7 +226,7 @@ class WalkContext {
       case "raw":
         return true;
 
-      // §7 明确要求放弃解析的
+      // 命令替换 / 进程替换:放弃解析
       case "command_substitution":
       case "process_substitution":
         return false;
@@ -289,13 +272,10 @@ class WalkContext {
     while (head < argv.length && argv[head]!.quoted === false && isAssignment(argv[head]!.text)) {
       head += 1;
     }
-    // (head 在下面剥包装词时会被重新赋值)
     if (head >= argv.length) return true; // 光有赋值
 
-    // 剥包装词(sudo / nice / timeout / xargs…)—— 句法层的事,
-    // 手写版由 peelWrapper 做,这里同理。
-    // 不剥的话 `nice -n 10 rm -rf /` 会问 classify "nice 算什么",
-    // 得到一个 exec,后面的 rm 就永远看不见了。
+    // 剥包装词(sudo / nice / timeout / xargs…):不剥的话 `nice -n 10 rm -rf /` 只会得到一个 exec,
+    // 后面的 rm 就看不见了。
     const peeled = peelWrappers(argv, head);
     if (peeled === null) return false;
     head = peeled.head;
@@ -303,14 +283,11 @@ class WalkContext {
     const nameTok = argv[head]!;
     const args = argv.slice(head + 1);
 
-    // 命令名取 basename:`/bin/rm` → `rm`。不取的话带路径写命令名
-    // (脚本和 hook 里的常见写法)会整条落 exec,规则层什么都看不见。
+    // 命令名取 basename(`/bin/rm` → `rm`),否则带路径的写法会整条落 exec,规则层什么都看不见
     const name = basenameOf(nameTok.text);
     if (!LOOKS_LIKE_COMMAND.test(name)) return false;
 
-    // §7 点名的另一条:遇到 eval 一律放弃解析。
-    // eval 的实参是**文本**,不解析它就不知道要跑什么 ——
-    // 而"不解析"意味着危险命令会藏在一个字符串里静默通过。
+    // eval 一律放弃解析:实参是文本,不解析就不知道要跑什么,危险命令会藏在字符串里
     if (name === "eval") return false;
 
     const classified = classifyCommand(name, args);
@@ -393,11 +370,8 @@ class WalkContext {
   }
 
   /**
-   * `bash -c "rm -rf x"` —— §7 点名的万能逃逸口。
-   *
-   * 内联脚本要**递归回整条管线**(而不只是解析),所以走 parseCommand 入口,
-   * 由它决定结果。递归失败 ⇒ 退回 exec,而不是整条 unknown:
-   * exec 仍会被规则层看见,不会变成静默放行。
+   * `bash -c "rm -rf x"` 是万能逃逸口:把 `-c` 的实参递归走一遍 walkToCommands。
+   * 递归失败退回 exec 而不是整条 unknown,exec 仍会被规则层看见,不会静默放行。
    */
   private expandInlineScript(
     argv: readonly { readonly text: string; readonly quoted: boolean }[],
@@ -433,6 +407,5 @@ class WalkContext {
   }
 }
 
-/** 供 index.ts 复用的入口签名(与手写版一致) */
 export type { ResourceSpec };
 export { walk };

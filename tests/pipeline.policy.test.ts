@@ -1,4 +1,4 @@
-// spec-m3 §4 / §8.3 —— 管线与策略:什么时候附策略、什么时候不附、salt、HARD_DENY 零调用。真实文件系统,走完整生产路径。
+// 管线与策略:什么时候附策略、什么时候不附、salt、HARD_DENY 零调用。真实文件系统,走完整生产路径。
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,7 +59,7 @@ const setPolicy = (dir: string, text: string): void => {
 };
 const actions = (command: string, cwd: string): readonly Action[] => toActions({ tool_name: "Bash", tool_input: { command }, cwd }, "t");
 
-describe("附策略的条件(§1 第 3 条)", () => {
+describe("附策略的条件", () => {
   const POLICY = "# 边界\n- 不要动 migrations/ 下的任何文件。\nscope: migrations/\n";
 
   test("★ flagged 是 policy.scope → 请求带策略文本与命中列表,prompt 里有策略块", async () => {
@@ -126,14 +126,14 @@ describe("附策略的条件(§1 第 3 条)", () => {
     expect(r.decision.reason).toBe("触及策略保护范围 migrations");
   });
 
-  test("没配模型:policy.scope 的 SOFT 按 §3.2 右列 ask,source fallback", async () => {
+  test("没配模型:policy.scope 的 SOFT → ask,source fallback", async () => {
     const r = await decideAllAsync(actions("rm -rf ./migrations", repo(POLICY)), { noCache: true });
     expect(r.decision.verdict).toBe("ask");
     expect(r.decision.source).toBe("fallback");
   });
 });
 
-describe("policy.self_write 不问模型(D15.7)", () => {
+describe("policy.self_write 不问模型", () => {
   test("★ 配了模型也不问:模型 0 次调用,ask,source rule,没有 model_details", async () => {
     const dir = repo("scope: migrations/\n");
     const spy = new SpyBackend("allow");
@@ -158,7 +158,7 @@ describe("policy.self_write 不问模型(D15.7)", () => {
     expect(spy.seen).toHaveLength(0);
   });
 
-  test("没配模型时 source 也是 rule(不是 §3.2 右列的 fallback:这不是降级)", async () => {
+  test("没配模型时 source 也是 rule(不是 fallback:这不是降级)", async () => {
     const r = await decideAllAsync(actions("rm .zgatepolicy", repo("scope: .\n")), { noCache: true });
     expect(r.decision.verdict).toBe("ask");
     expect(r.decision.source).toBe("rule");
@@ -185,8 +185,8 @@ describe("policy.self_write 不问模型(D15.7)", () => {
   });
 });
 
-describe("缓存 salt(§2.4)", () => {
-  test("无策略时 salt 就是分支名,与 M2 相同:按 branch 能直接查到", async () => {
+describe("缓存 salt", () => {
+  test("无策略时 salt 就是分支名:按 branch 能直接查到", async () => {
     const dir = repo();
     const a = actions("rm -rf ./migrations", dir)[0]!;
     await decideActionAsync(a);

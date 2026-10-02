@@ -1,12 +1,7 @@
-// SPEC.md §15.3 —— Claude Code 适配器的映射表测试。
+// Claude Code 适配器的映射表测试。
 //
-// 这个文件的存在理由:§2.1 说「适配器只做格式转换,不做任何环境探测、
-// 不做任何判断」。一条测试能证明它**没做**判断的唯一办法,是把同一份
-// 输入喂给**真正的** shell 解析器和适配器,断言适配器的产出逐字段
-// 等于解析器的产出 —— 而不是等于我在测试里手抄的一份副本。
-//
-// 所以本文件里凡是涉及 Bash 的断言,期望值都来自 parseCommand(),不来自
-// 字面量。手抄的副本会随着解析器一起漂移,那样的测试什么也证明不了。
+// 适配器只做格式转换、不做判断。要证明这一点,Bash 相关断言的期望值一律来自真正的
+// parseCommand(),不来自手抄的字面量 —— 手抄的副本会随解析器漂移,什么也证明不了。
 
 import { describe, expect, test } from "bun:test";
 import { ActionSchema, VerbSchema } from "../src/core/action.ts";
@@ -20,7 +15,7 @@ import {
   validateAction,
 } from "../src/adapters/claude-code.ts";
 import type { HookInput } from "../src/adapters/claude-code.ts";
-import { hookDetails, parseHookEvent, parseHookInput as parseHookInputM4 } from "../src/adapters/claude-code.ts";
+import { hookDetails, parseHookEvent } from "../src/adapters/claude-code.ts";
 
 const TURN = "turn-0001";
 
@@ -38,10 +33,10 @@ function one(partial: Partial<HookInput>): Action {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// 1. 工具名 → verb(§10 的表,逐行)
+// 1. 工具名 → verb
 // ─────────────────────────────────────────────────────────────────
 
-describe("§10 工具名 → verb 映射", () => {
+describe("工具名 → verb 映射", () => {
   const TABLE: readonly [string, Record<string, unknown>, Verb][] = [
     ["Read", { file_path: "/repo/a.ts" }, "read"],
     ["Glob", { path: "/repo/src" }, "read"],
@@ -59,7 +54,7 @@ describe("§10 工具名 → verb 映射", () => {
     });
   }
 
-  test("Bash 的 verb 不在表里 —— 由 §7 解析决定", () => {
+  test("Bash 的 verb 不在表里 —— 由 shell 解析决定", () => {
     // 同一个 tool_name 三种 verb,证明它不是查表来的
     const verbs = [
       one({ tool_name: "Bash", tool_input: { command: "cat a.txt" } }).verb,
@@ -69,7 +64,7 @@ describe("§10 工具名 → verb 映射", () => {
     expect(verbs).toEqual(["read", "delete", "network"]);
   });
 
-  test("表外的工具 → unknown,不瞎猜;没有可判动作的内部工具跳过(D15.10)", () => {
+  test("表外的工具 → unknown,不瞎猜;没有可判动作的内部工具跳过", () => {
     for (const tool of ["SomeFutureTool", "mcp__github__delete_repo", "PowerShell"]) {
       const acts = toActions(hook({ tool_name: tool, tool_input: {} }), TURN);
       expect(acts, tool).toHaveLength(1);
@@ -85,7 +80,7 @@ describe("§10 工具名 → verb 映射", () => {
 // 2. targets 抽取
 // ─────────────────────────────────────────────────────────────────
 
-describe("§10 targets 来源", () => {
+describe("targets 来源", () => {
   test("Read/Edit/Write 取 file_path", () => {
     expect(one({ tool_name: "Read", tool_input: { file_path: "/repo/x.ts" } }).targets).toEqual([
       { kind: "file", raw: "/repo/x.ts" },
@@ -112,7 +107,7 @@ describe("§10 targets 来源", () => {
     ]);
   });
 
-  test("§10 说 Glob/Grep 的 path 可能为空 —— 空则不产出 target,不产出 raw: \"\"", () => {
+  test("Glob/Grep 的 path 可能为空 —— 空则不产出 target,不产出 raw: \"\"", () => {
     // 空字符串
     expect(one({ tool_name: "Glob", tool_input: { path: "" } }).targets).toEqual([]);
     // 字段缺失
@@ -123,12 +118,12 @@ describe("§10 targets 来源", () => {
     expect(one({ tool_name: "Grep", tool_input: { path: 42 } }).targets).toEqual([]);
   });
 
-  test("§10 说 WebFetch/WebSearch 的 url 可能为空", () => {
+  test("WebFetch/WebSearch 的 url 可能为空", () => {
     expect(one({ tool_name: "WebFetch", tool_input: {} }).targets).toEqual([]);
     expect(one({ tool_name: "WebSearch", tool_input: {} }).targets).toEqual([]);
   });
 
-  test("raw 原样保留,不做任何处理(§2.1:agent 给的原始字符串)", () => {
+  test("raw 原样保留,不做任何处理(agent 给的原始字符串)", () => {
     const weird = "./a/../b\t\n  spaced  ";
     expect(one({ tool_name: "Read", tool_input: { file_path: weird } }).targets[0]?.raw).toBe(weird);
     // 相对路径不变成绝对路径
@@ -137,10 +132,10 @@ describe("§10 targets 来源", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────
-// 3. Bash:一次调用 → 多个 Action(§7)
+// 3. Bash:一次调用 → 多个 Action
 // ─────────────────────────────────────────────────────────────────
 
-describe("§7 Bash → 多条 Action", () => {
+describe("Bash → 多条 Action", () => {
   test("适配器产出逐字段等于 parseCommand 的产出", () => {
     const cmds = [
       "cd a && rm -rf b",
@@ -161,9 +156,8 @@ describe("§7 Bash → 多条 Action", () => {
       expect(acts.length, command).toBe(parsed.length);
       for (let i = 0; i < parsed.length; i++) {
         expect(acts[i]?.verb, command).toBe(parsed[i]?.verb);
-        // 只比 §2.1 冻结的 kind/raw。`from`(arg / redirect)是 shell 层
-        // 内部给规则层做证据链用的,适配器按契约**必须丢掉**它 ——
-        // 见 D8.1:冻结类型里没有这个字段,也不该有。
+        // 只比 kind/raw。`from`(arg / redirect)是 shell 层给规则层的内部信息,
+        // Action 里没有这个字段,适配器必须丢掉它。
         expect(
           (acts[i]?.targets ?? []).map((t) => ({ kind: t.kind, raw: t.raw })),
           command,
@@ -175,14 +169,13 @@ describe("§7 Bash → 多条 Action", () => {
   });
 
   test("多命令时 verb 各自独立 —— 不是整条取一个 verb", () => {
-    // 用 `make && rm -rf b` 而不是 `cd a && rm -rf b`:`cd` 按 D2.3 是
-    // 静默命令(不产出 Action),拿它当例子会得到 1 条而不是 2 条。
+    // 不用 `cd a && rm -rf b`:cd 是静默命令,不产出 Action,只会得到 1 条。
     const acts = toActions(hook({ tool_name: "Bash", tool_input: { command: "make && rm -rf b" } }), TURN);
     expect(acts.map((a) => a.verb)).toEqual(["exec", "delete"]);
   });
 
   test("解析失败 → 一条 verb: \"unknown\",不是空数组", () => {
-    // §4.2 要求解析失败落 SOFT;空数组会被管线当成"无动作"放行。
+    // 解析失败要落 SOFT;空数组会被管线当成"无动作"放行。
     for (const command of ["$(echo rm) -rf x", "eval rm -rf x", "echo `rm -rf x`"]) {
       const acts = toActions(hook({ tool_name: "Bash", tool_input: { command } }), TURN);
       expect(acts.length, command).toBe(1);
@@ -192,14 +185,9 @@ describe("§7 Bash → 多条 Action", () => {
   });
 
   test("解析成功但零条命令 → 也是一条 unknown(不是空数组)", () => {
-    // ★ 这条是 §4.5 pre 轮第一条 HARD_DENY 模式能不能跑起来的前提。
-    //
-    // `:(){ :|:& };:` 解析出来是 []。如果适配器原样返回 [],
-    // 管线里 `for (const a of actions)` 循环零次,规则层**一次都不会被调用**,
-    // 于是 fork bomb 被静默放行。
-    //
-    // 断言分两半:解析器确实交白卷(那是它的正确行为),
-    // 而适配器必须把它翻译成 unknown。
+    // ★ fork bomb 的 HARD_DENY 规则靠这条才有机会匹配:`:(){ :|:& };:` 解析出来是 [],
+    // 适配器若原样返回 [],规则层一次都不会被调用,fork bomb 被静默放行。
+    // 断言分两半:解析器交白卷是正确行为,适配器必须把它翻译成 unknown。
     for (const command of [":(){ :|:& };:", "f(){ rm -rf /; }", "true", "cd /tmp"]) {
       expect(parseCommand(command), `解析器对 ${command} 的产出`).toEqual([]);
       const acts = toActions(hook({ tool_name: "Bash", tool_input: { command } }), TURN);
@@ -227,17 +215,17 @@ describe("§7 Bash → 多条 Action", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────
-// 4. command 字段(§2.1)
+// 4. command 字段
 // ─────────────────────────────────────────────────────────────────
 
-describe("§2.1 command 字段", () => {
+describe("command 字段", () => {
   test("verb === \"exec\" 时是原始命令行", () => {
     const a = one({ tool_name: "Bash", tool_input: { command: "make install" } });
     expect(a.verb).toBe("exec");
     expect(a.command).toBe("make install");
   });
 
-  test("非 exec 的 Action,command 是 null(§2.1 字面)", () => {
+  test("非 exec 的 Action,command 是 null", () => {
     for (const [command, verb] of [
       ["rm -rf x", "delete"],
       ["cat a.txt", "read"],
@@ -276,7 +264,7 @@ describe("§2.1 command 字段", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────
-// 5. 产出的 Action 必须过冻结 schema(§2.1)
+// 5. 产出的 Action 必须过 ActionSchema
 // ─────────────────────────────────────────────────────────────────
 
 describe("产出过 ActionSchema", () => {
@@ -296,7 +284,7 @@ describe("产出过 ActionSchema", () => {
     }
   });
 
-  test("verb 一定是 §2.1 六个值之一", () => {
+  test("verb 一定是六个合法值之一", () => {
     const ok = new Set(VerbSchema.options);
     for (const tool of ["Read", "Write", "WebSearch", "Bash", "Nope"]) {
       for (const a of toActions(hook({ tool_name: tool, tool_input: { command: "ls" } }), TURN)) {
@@ -322,9 +310,8 @@ describe("产出过 ActionSchema", () => {
     expect(a?.cwd.length).toBeGreaterThan(0);
   });
 
-  test("§2.4:热路径不 parse —— 产出是构造的,不需要 validateAction 才合法", () => {
-    // ActionSchema 的公开形状与本文件断言的一致即可(compile-time 由
-    // 去掉 `as Action` 断言保证,这里只留一个运行时的兜底检查)
+  test("热路径不 parse —— 产出是构造的,不需要 validateAction 才合法", () => {
+    // 编译期靠不加 `as Action` 保证,这里只留一个运行时兜底:键集合与 schema 一致
     const a = one({ tool_name: "Write", tool_input: { file_path: "/repo/a.ts" } });
     const schemaKeys: string[] = [...ActionSchema.keyof().options];
     const producedKeys: string[] = Object.keys(a);
@@ -333,10 +320,10 @@ describe("产出过 ActionSchema", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────
-// 6. §10 特例:Task
+// 6. 特例:Task
 // ─────────────────────────────────────────────────────────────────
 
-describe("§10 Task 跳过", () => {
+describe("Task 跳过", () => {
   test("Task 产出空数组", () => {
     expect(toActions(hook({ tool_name: "Task", tool_input: { prompt: "go do stuff" } }), TURN)).toEqual([]);
   });
@@ -403,7 +390,7 @@ describe("parseHookInput", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────
-// 8. 响应格式(§10)
+// 8. 响应格式
 // ─────────────────────────────────────────────────────────────────
 
 function decision(verdict: "allow" | "ask" | "deny", reason: string): Decision {
@@ -418,7 +405,7 @@ function decision(verdict: "allow" | "ask" | "deny", reason: string): Decision {
   };
 }
 
-describe("§10 响应格式", () => {
+describe("响应格式", () => {
   test("外层只有 hookSpecificOutput", () => {
     const r = toHookResponse(decision("deny", "递归删除根目录"));
     expect(Object.keys(r)).toEqual(["hookSpecificOutput"]);
@@ -436,7 +423,7 @@ describe("§10 响应格式", () => {
     }
   });
 
-  test("§10:allow 时 reason 留空字符串", () => {
+  test("allow 时 reason 留空字符串", () => {
     const r = toHookResponse(decision("allow", "看起来正常"));
     expect(r.hookSpecificOutput.permissionDecisionReason).toBe("");
   });
@@ -462,20 +449,12 @@ describe("§10 响应格式", () => {
 // ─────────────────────────────────────────────────────────────────
 // 反向断言表(适配器层)
 //
-// 和 shell.test.ts 里那张表的关系:那张管**解析器**,这张管**适配器**。
-// 分两张是因为它们答的是两个不同的问题:
-//
-//   解析器:"从这条命令的句法里,能读出哪些文件动作?"
-//           答不出来 ⇒ null 或者 []   都是**合法的**
-//   适配器:"规则层等下能拿到什么?"
-//           必须永远给出**至少一条** Action,除非真的没有工具调用可判
-//
-// fork bomb 是最好的例子:解析器说"没有文件动作"(正确),
-// 适配器必须说"有一条命令,但我不知道它是干什么的"(也正确)。
-// 两层各自老实,合起来才是安全的。中间任何一层自作主张都会漏。
+// shell.test.ts 里那张管解析器:读不出文件动作时返回 null 或 [] 都合法。
+// 这张管适配器:除非真的没有工具调用可判,必须给规则层至少一条 Action。
+// 例如 fork bomb:解析器说"没有文件动作",适配器要说"有一条命令,但看不懂"。
 // ─────────────────────────────────────────────────────────────────
 
-describe("§7 反向断言(适配器层):危险命令必须给规则层留下东西", () => {
+describe("反向断言(适配器层):危险命令必须给规则层留下东西", () => {
   const mustNotBeHarmless = [
     "rm -rf /",
     "sudo rm -rf /",
@@ -520,14 +499,13 @@ describe("§7 反向断言(适配器层):危险命令必须给规则层留下东
       const innocentRead = acts.every((a) => a.verb === "read" && a.targets.length === 0);
       expect(innocentRead, `${command} 被适配器产成了"无害读取"`).toBe(false);
 
-      // ③ 每个 Action 都要能过冻结 schema(§2.1)
+      // ③ 每个 Action 都要能过 ActionSchema
       for (const a of acts) expect(validateAction(a), command).toBe(true);
     });
   }
 });
 
-// 反向的另一半:良性命令不许被适配器变成打断。
-// 项目简介的判据 —— 同等安全下打断少 80% 才是卖点。
+// 反向的另一半:良性命令不许被适配器变成打断 —— 同等安全下少打断才是卖点。
 describe("反向断言(适配器层):良性命令不许变成打断", () => {
   const mustNotBeUnknown = [
     "bun test",
@@ -591,10 +569,10 @@ describe("端到端形状", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────
-// M4:hook 字段与事件分派(spec-m4 §2 / §4,D16.0)
+// 10. hook 字段与事件分派
 // ─────────────────────────────────────────────────────────────────
 
-describe("M4 hookDetails:只进 journal 的对账字段", () => {
+describe("hookDetails:只进 journal 的对账字段", () => {
   test("带 tool_use_id 的 PreToolUse 输入 → 三个字段都抄下来", () => {
     expect(hookDetails({ tool_name: "Bash", tool_use_id: "toolu_01A", permission_mode: "default", prompt_id: "p-1" })).toEqual({
       tool_use_id: "toolu_01A",
@@ -616,7 +594,7 @@ describe("M4 hookDetails:只进 journal 的对账字段", () => {
     expect(d !== null && "prompt_id" in d).toBe(false);
   });
 
-  test("id 是不透明字符串:经代理的 chatcmpl-tool-… 也照收(D16.0)", () => {
+  test("id 是不透明字符串:经代理的 chatcmpl-tool-… 也照收", () => {
     expect(hookDetails({ tool_name: "Bash", tool_use_id: "chatcmpl-tool-8f3d87991157ed19" })?.tool_use_id).toBe("chatcmpl-tool-8f3d87991157ed19");
   });
 
@@ -625,15 +603,15 @@ describe("M4 hookDetails:只进 journal 的对账字段", () => {
   });
 });
 
-describe("M4 parseHookEvent:按 hook_event_name 分派", () => {
+describe("parseHookEvent:按 hook_event_name 分派", () => {
   test("PreToolUse → kind PreToolUse,input 就是 parseHookInput 的结果", () => {
     const raw = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "ls" }, tool_use_id: "t1" };
     const ev = parseHookEvent(raw);
     expect(ev?.kind).toBe("PreToolUse");
-    if (ev?.kind === "PreToolUse") expect(ev.input).toEqual(parseHookInputM4(raw) as HookInput);
+    if (ev?.kind === "PreToolUse") expect(ev.input).toEqual(parseHookInput(raw) as HookInput);
   });
 
-  test("★ 没写 hook_event_name 的按 PreToolUse 处理(M1–M3 的调用方与 bench 只发这一种)", () => {
+  test("★ 没写 hook_event_name 的按 PreToolUse 处理(bench 与老的调用方只发这一种)", () => {
     expect(parseHookEvent({ tool_name: "Read", tool_input: { file_path: "/a" } })?.kind).toBe("PreToolUse");
   });
 
@@ -681,7 +659,7 @@ describe("M4 parseHookEvent:按 hook_event_name 分派", () => {
     }
   });
 
-  test("★ 2.1.284 真机 body 原样能分派(D16.0 探针记下的形状)", () => {
+  test("★ 2.1.284 真机 body 原样能分派", () => {
     const common = {
       session_id: "5712aca3-3fb2-4afe-9ba4-0556d812fadc", prompt_id: "a5a32a88-83a1-466e-8530-4f66c985a858",
       transcript_path: "/Users/x/.claude/projects/p/5712aca3.jsonl", cwd: "/private/tmp/zg-m4-probe/proj", permission_mode: "default", effort: { level: "xhigh" },

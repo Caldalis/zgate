@@ -1,4 +1,4 @@
-// spec-m5 —— opencode 适配器:线格式解析与工具 → Action 的映射(参照 opencode 1.18.33 的工具 id 与参数名)。
+// opencode 适配器:线格式解析与工具 → Action 的映射(参照 opencode 1.18.33 的工具 id 与参数名)。
 
 import { describe, expect, test } from "bun:test";
 import { ActionSchema } from "../src/core/action.ts";
@@ -36,7 +36,7 @@ describe("parseOpencodeEvent:三种事件", () => {
 });
 
 describe("toActionsOpencode:工具映射", () => {
-  test("bash 走 §7 解析:复合语句切多条,exec 带 command,agent 是 opencode", () => {
+  test("bash 走 shell 解析:复合语句切多条,exec 带 command,agent 是 opencode", () => {
     const acts = toActionsOpencode(before("bash", { command: "git status && rm -rf ./build" }), TURN);
     expect(acts.length).toBe(2);
     expect(acts.map((a) => a.verb)).toEqual(["read", "delete"]);

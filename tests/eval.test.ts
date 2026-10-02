@@ -1,4 +1,4 @@
-// zgate eval(D14.24):用例集本身的约束 + 评测器的算术。真实模型不在这里跑。
+// zgate eval:用例集本身的约束 + 评测器的算术。真实模型不在这里跑。
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,7 +27,7 @@ async function runAll(backend: ModelBackend | null): Promise<EvalResult[]> {
 }
 
 describe("用例集(tests/eval/cases.yaml)", () => {
-  test("与 D12.15 同构:12 条该问、9 条该放行,id 唯一,每条有 why", () => {
+  test("12 条该问、9 条该放行,id 唯一,每条有 why", () => {
     expect(CASES.filter((c) => c.label === "ask").length).toBe(12);
     expect(CASES.filter((c) => c.label === "allow").length).toBe(9);
     expect(new Set(CASES.map((c) => c.id)).size).toBe(CASES.length);
@@ -43,7 +43,7 @@ describe("用例集(tests/eval/cases.yaml)", () => {
   });
 });
 
-describe("策略用例集(tests/eval/policy.yaml,spec-m3 §8.2)", () => {
+describe("策略用例集(tests/eval/policy.yaml)", () => {
   test("7 条该问、3 条该放行,id 唯一且不与 cases.yaml 重名,每条有 why 且写了 .zgatepolicy", () => {
     expect(POLICY_CASES.filter((c) => c.label === "ask").length).toBe(7);
     expect(POLICY_CASES.filter((c) => c.label === "allow").length).toBe(3);
@@ -66,7 +66,7 @@ describe("策略用例集(tests/eval/policy.yaml,spec-m3 §8.2)", () => {
     }
   });
 
-  test("★ 同一条命令去掉策略文件后全是 PASS:这 11 条今天模型一条都看不到,策略是它们进模型的唯一原因", async () => {
+  test("★ 同一条命令去掉策略文件后全是 PASS:没有策略模型一条都看不到,策略是它们进模型的唯一原因", async () => {
     for (const c of POLICY_CASES) {
       const write = Object.fromEntries(Object.entries(c.setup?.write ?? {}).filter(([p]) => !p.endsWith("/.zgatepolicy")));
       const stripped: EvalCase = { ...c, id: `${c.id}--no-policy`, setup: { ...c.setup, write } };

@@ -1,6 +1,5 @@
-// spec-m4 —— 结果信号(outcome)的端到端测试:起真的 daemon,按 Claude Code 2.1.284 的事件形状(D16.0 探针)打 /hook/claude-code,
-// 断言 §9 的补丁行。核心论点:PreToolUse 的响应一个字节不变(§1 第 1 条);approved 只在工具真的执行了之后写(§1 第 3 条);
-// Post 类事件永远回 {}(§1 第 4 条)。
+// 结果信号(outcome)的端到端测试:起真的 daemon,按 Claude Code 2.1.284 真机的事件形状打 /hook/claude-code,断言 journal 的补丁行。
+// 要点:PreToolUse 的响应一个字节不变;approved 只在工具真的执行了之后写;Post 类事件永远回 {}。
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -109,8 +108,8 @@ function id(): string {
 }
 
 // ===========================================================================
-describe("spec-m4 §1 第 1 条:PreToolUse 路径不变,只多记 hook", () => {
-  test("★ 带 tool_use_id 的 ask 响应形状与 M3 完全相同:外层只有 hookSpecificOutput,内层恰好三个键", async () => {
+describe("PreToolUse 路径不变,只多记 hook", () => {
+  test("★ 带 tool_use_id 的 ask 响应形状不变:外层只有 hookSpecificOutput,内层恰好三个键", async () => {
     const { status, json } = await hook(pre(id(), ASK_CMD));
     expect(status).toBe(200);
     expect(Object.keys(json)).toEqual(["hookSpecificOutput"]);
@@ -160,7 +159,7 @@ describe("spec-m4 §1 第 1 条:PreToolUse 路径不变,只多记 hook", () => {
 });
 
 // ===========================================================================
-describe("spec-m4 §2 approved:只在工具真的执行了之后写", () => {
+describe("approved:只在工具真的执行了之后写", () => {
   test("★ ask → 同 session 同 id 的 PostToolUse → 补丁 approved / true;响应是 {}", async () => {
     const t = id();
     await hook(pre(t, ASK_CMD));
@@ -220,7 +219,7 @@ describe("spec-m4 §2 approved:只在工具真的执行了之后写", () => {
     expect(patchesFor(did).length).toBe(1);
   });
 
-  test("id 是不透明字符串:chatcmpl-tool-… 也对得上(D16.0)", async () => {
+  test("id 是不透明字符串:chatcmpl-tool-… 也对得上", async () => {
     const t = "chatcmpl-tool-8f3d87991157ed19";
     await hook(pre(t, ASK_CMD));
     await hook(postOk(t));
@@ -229,7 +228,7 @@ describe("spec-m4 §2 approved:只在工具真的执行了之后写", () => {
 });
 
 // ===========================================================================
-describe("spec-m4 §2 unknown:PostToolBatch 与 SessionEnd", () => {
+describe("unknown:PostToolBatch 与 SessionEnd", () => {
   test("★ ask → PostToolBatch 带着仍悬着的 id(之前没来 Post 事件)→ unknown / null(`-p` 自动拒绝的路)", async () => {
     const t = id();
     await hook(pre(t, ASK_CMD));
@@ -298,9 +297,9 @@ describe("spec-m4 §2 unknown:PostToolBatch 与 SessionEnd", () => {
 });
 
 // ===========================================================================
-describe("spec-m4 §3 复合语句:只补判 ask 的行(D16.1)", () => {
+describe("复合语句:只补判 ask 的行", () => {
   test("★ `git status && touch ../outside.txt` 两行同一个 tool_use_id;PostToolUse 只给 ask 的那行补 approved", async () => {
-    // 不用 `&& npm publish`:exec.* 文本规则看的是整条命令原文,会让 git status 那行也变 ask(D12.10 / D15.10);
+    // 不用 `&& npm publish`:exec.* 文本规则看的是整条命令原文,会让 git status 那行也变 ask;
     // fs.outside_cwd 是按目标判的,两行才分得开
     const t = id();
     const { json } = await hook(pre(t, `${ALLOW_CMD} && touch ../outside.txt`));
@@ -319,7 +318,7 @@ describe("spec-m4 §3 复合语句:只补判 ask 的行(D16.1)", () => {
 });
 
 // ===========================================================================
-describe("spec-m4 §1 第 4 条:旁观的事件一律 {},不写日志", () => {
+describe("旁观的事件一律 {},不写日志", () => {
   test("PermissionRequest / PermissionDenied / Notification / Stop / UserPromptSubmit / 未来的事件 → 200 {}", async () => {
     const before = lines().length;
     for (const name of ["PermissionRequest", "PermissionDenied", "Notification", "Stop", "UserPromptSubmit", "SubagentStop", "BrandNewEvent"]) {
@@ -344,7 +343,7 @@ describe("spec-m4 §1 第 4 条:旁观的事件一律 {},不写日志", () => {
 });
 
 // ===========================================================================
-describe("spec-m4 §4 replay 端到端", () => {
+describe("replay 端到端", () => {
   test("★ replay 把 hook 与钩子推出来的 outcome 一起带回", async () => {
     const t = id();
     await hook(pre(t, ASK_CMD));

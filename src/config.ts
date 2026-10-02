@@ -1,7 +1,7 @@
-// SPEC.md §5.3 —— 配置文件 `~/.zgate/config.json`。
+// 配置文件 `~/.zgate/config.json`。
 //
 // 只在守护进程启动时读一次;parse 失败拒绝启动。不存密钥,只存环境变量名。
-// 文件不存在 = 空配置 = M1 行为(规则层判 ask 的直接 ask)。
+// 文件不存在 = 空配置 = 不走模型(规则层判 SOFT 的直接 ask)。
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -37,7 +37,7 @@ export const ChainConfigSchema = z
     escalation_threshold: z.number().min(0).max(1).default(0.75),
   })
   .superRefine((c, ctx) => {
-    // chain 的总预算是两段之和且封顶 5000;超了云端就拿不到自己那份(D14.17)
+    // chain 的总预算是两段之和且封顶 5000;超了云端就拿不到自己那份
     const sum = c.local.timeout_ms + c.cloud.timeout_ms;
     if (sum > MODEL_TIMEOUT_CAP_MS) {
       ctx.addIssue({
@@ -106,7 +106,7 @@ export function loadConfig(path = configPath()): Config {
   return parseConfig(text, path);
 }
 
-/** 合法但可疑的配置。启动时打到 stderr,不拒绝(D14.22)。 */
+/** 合法但可疑的配置。启动时打到 stderr,不拒绝。 */
 export function configWarnings(config: Config): string[] {
   const out: string[] = [];
   const chain = config.model?.backend === "chain" ? config.model.chain : undefined;

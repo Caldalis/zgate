@@ -61,7 +61,7 @@ export function mockServer(
 export const json = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-/** llama-server /v1/chat/completions 的响应形状(实测 llama.cpp b10964,D14.4)。 */
+/** llama-server /v1/chat/completions 的响应形状(实测 llama.cpp b10964)。 */
 export function llamaResponse(
   content: string,
   logprobs: { allow?: number; ask?: number } | null,

@@ -4,7 +4,7 @@
 
 它解决的问题:正则规则只认字符串,`rm -rf ./build` 永远"安全",哪怕 `build` 是指向生产目录的软链接;云端模型能懂语义,但一次一两秒,一个 session 几百次调用。zgate 跑在本地,先用规则层认死的危险模式(1 毫秒,不可推翻),再用环境探针(真实路径、软链接、git 分支)把"同一条命令在不同环境里风险不同"这件事判出来。
 
-当前是 **M4:规则层 + 可选的模型层 + 仓库策略 + 结果信号**。规则层判 `SOFT`(拿不准)的调用可以交给一个本地或云端模型再判一次;不配模型就和 M1 一样,`SOFT` 一律问用户。仓库根放一个自然语言的 `.zgatepolicy`("不要动 migrations/ 下的任何文件"),它保护范围内的改动会被送到模型面前,由模型按策略判。网关说"问一下"、用户在确认框里点了通过,Claude Code 之后的 `PostToolUse` 事件会被对回那次 `ask`,记成一条 outcome —— 跑一段时间,日志里就躺着一份"网关判过头了多少"的免费标注。
+当前包含 **规则层 + 可选的模型层 + 仓库策略 + 结果信号**。规则层判 `SOFT`(拿不准)的调用可以交给一个本地或云端模型再判一次;不配模型时 `SOFT` 一律问用户。仓库根放一个自然语言的 `.zgatepolicy`("不要动 migrations/ 下的任何文件"),它保护范围内的改动会被送到模型面前,由模型按策略判。网关说"问一下"、用户在确认框里点了通过,Claude Code 之后的 `PostToolUse` 事件会被对回那次 `ask`,记成一条 outcome —— 跑一段时间,日志里就躺着一份"网关判过头了多少"的免费标注。
 
 ## 安装
 
@@ -199,7 +199,7 @@ zgate check "rm -rf ./migrations"                      # ASK  触及策略保护
 | `zgate bench [--n N] [--http] [--json]` | 跑 N 次混合请求打印 p50/p95/p99。`--http` 起真 daemon 量端到端 |
 | `zgate eval [--cases FILE] [--json]` | 拿 `tests/eval/cases.yaml`(21 条人工标注的 `SOFT` 样本)跑配置里的模型,打印一致率、该问却放行、误打断与延迟。模型数字的复现入口;`--cases tests/eval/policy.yaml` 是 10 条策略用例 |
 
-HTTP 端点(§8):`POST /hook/claude-code`(PreToolUse 裁决;PostToolUse / PostToolUseFailure / PostToolBatch / SessionEnd 只写 outcome)、`POST /hook/opencode`(插件的 before 裁决回 Decision;replied / after 只写 outcome)、`POST /decide`(收 `{action}` 返回 Decision,供其他适配器)、`POST /outcome`(外部记录用户实际选择,与钩子推出来的 outcome 同一入口)、`GET /healthz`。
+HTTP 端点:`POST /hook/claude-code`(PreToolUse 裁决;PostToolUse / PostToolUseFailure / PostToolBatch / SessionEnd 只写 outcome)、`POST /hook/opencode`(插件的 before 裁决回 Decision;replied / after 只写 outcome)、`POST /decide`(收 `{action}` 返回 Decision,供其他适配器)、`POST /outcome`(外部记录用户实际选择,与钩子推出来的 outcome 同一入口)、`GET /healthz`。
 
 ## 决策规则
 
@@ -294,7 +294,7 @@ bun test            # 1202 个测试,含 tests/golden/cases.yaml 的 83 条 gold
 bun run typecheck   # tsc --noEmit,strict
 ```
 
-依赖只有 `zod`。CI(`.github/workflows/ci.yml`)在 ubuntu 与 macos 上用 Bun 1.3.14 跑 `bun install --frozen-lockfile`、`typecheck`、`bun test` 与 `bench --n 500`;bench 不达 §13 预算(p50 < 5ms、p99 < 30ms)即失败。设计规格(SPEC.md)与实现决策记录(DECISIONS.md)是本地文档,不在仓库里。
+依赖只有 `zod`。CI(`.github/workflows/ci.yml`)在 ubuntu 与 macos 上用 Bun 1.3.14 跑 `bun install --frozen-lockfile`、`typecheck`、`bun test` 与 `bench --n 500`;bench 不达预算(p50 < 5ms、p99 < 30ms)即失败。
 
 ## 特性列表
 
@@ -303,7 +303,7 @@ bun run typecheck   # tsc --noEmit,strict
 - 两轮规则:pre 轮只看命令(HARD_DENY 短路,不探测),post 轮看环境
 - 环境探针:realpath / 软链接 / cwd 与仓库归属;git 分支与默认分支只读文件不 spawn
 - 60 秒规则结论缓存,key 含分支
-- §3.2 降级表:HARD_DENY 终局,SOFT 无模型时 ask,PASS 无模型时 allow
+- 降级表:HARD_DENY 终局,SOFT 无模型时 ask,PASS 无模型时 allow
 - 模型层:本地 GGUF(llama-server HTTP,grammar 约束 + logprob 置信度)、云端(Anthropic / OpenAI-compatible,密钥只存环境变量名)、chain(本地优先,低置信度升级云端)
 - 超时按后端配,`AbortController` 真断开请求;超时 / 不可达 / 4xx / 输出异常一律降级到规则结论
 - `~/.zgate/config.json` 配置文件,启动时读一次,parse 失败拒绝启动
@@ -311,7 +311,7 @@ bun run typecheck   # tsc --noEmit,strict
 - `zgate check` 一键验证(`--model` 走真实模型),`zgate bench` 进程内与 HTTP 端到端两种模式
 - `zgate eval`:21 条人工标注的 `SOFT` 样本集(`tests/eval/cases.yaml`,与 golden 同一套环境描述)整批过模型,输出一致率、该问却放行、误打断与延迟
 - 仓库策略 `.zgatepolicy`:自然语言 + `scope:` 行,只认 git 仓库根,软链接当不存在,只读前 4KB,3 秒缓存;`scope` 命中的非 read 调用升 `SOFT`,策略文本进模型 prompt 的稳定前缀;写策略文件本身直接问用户、不问模型
-- 策略只能收紧:不产生 deny、不放宽规则,策略文本只在 `policy.scope` 是唯一理由时进 prompt,没有策略时 prompt 与日志与 M2 逐字节相同
+- 策略只能收紧:不产生 deny、不放宽规则,策略文本只在 `policy.scope` 是唯一理由时进 prompt,没有策略时 prompt 与日志逐字节不变
 - journal 可选的 `policy` 字段(路径、sha256、大小、命中的条目);`zgate check` 打印策略状态;`tests/eval/policy.yaml` 10 条策略评测用例
 - 规则层认"命令本身就是对外部系统的破坏":数据库 DDL 与重置、基础设施与云资源删除、发布部署、远程执行破坏命令与传输密钥文件、系统级操作、整份导出环境变量;删 / 写目标含未展开变量或 `~`、`rm` 目标来自 stdin 一律问
 - 适配器认全当前 Claude Code 的工具名:无动作的内部工具跳过,Monitor 按 Bash 解析,MultiEdit 按写处理,MCP 工具 `ask` 并写清 server

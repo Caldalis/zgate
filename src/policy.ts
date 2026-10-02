@@ -1,7 +1,6 @@
-// spec-m3 §2 —— 仓库根的 `.zgatepolicy`:发现、读取、scope 解析、缓存。
+// 仓库根的 `.zgatepolicy`:发现、读取、scope 解析、缓存。
 //
-// 整个文件是给模型看的自然语言,唯一的结构是 `scope: <仓库相对路径>` 行(不是 DSL,
-// 与 .gitignore 的最简子集同构)。文件名在 SPEC.md 顶部定死。
+// 整个文件是给模型看的自然语言,唯一的结构是 `scope: <仓库相对路径>` 行,不是 DSL。
 // 只认 git 仓库根,不找 cwd、父目录或 ~/.zgate/;软链接当不存在(恶意仓库可以把它
 // 链到 ~/.ssh/id_rsa,文件内容会进 prompt);只读前 4096 字节。
 
@@ -12,7 +11,7 @@ import { z } from "zod";
 
 export const POLICY_FILENAME = ".zgatepolicy";
 export const MAX_POLICY_BYTES = 4096;
-/** 与 git 探针一致(§6)。 */
+/** 与 git 探针一致。 */
 const CACHE_TTL_MS = 3000;
 const CACHE_MAX = 256;
 
@@ -37,7 +36,7 @@ export interface Policy {
 }
 
 /**
- * journal 顶层的可选 `policy`(§9 的可选扩展,spec-m3 §5,与 D14.7 同一做法):策略在场时写,不管最后是 PASS 还是 SOFT。
+ * journal 顶层的可选字段 `policy`:策略在场时写,不管最后是 PASS 还是 SOFT。
  * 策略文本不进日志:sha256 足以对回仓库里那个版本。字段 snake_case。
  */
 export const PolicyDetailsSchema = z.object({
@@ -98,7 +97,7 @@ export function parseScope(text: string, root: string): { scope: ScopeEntry[]; w
       const real = realpathSync(abs);
       if (real !== abs) paths.push(real);
     } catch {
-      // 还不存在:目标的预期落点(D12.11)仍能和 abs 比
+      // 还不存在:按预期落点和 abs 比
     }
     scope.push({ entry, paths });
   }

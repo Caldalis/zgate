@@ -1,11 +1,7 @@
-// SPEC.md §8 / §10 / §13 / §14 —— HTTP 与 CLI 的端到端测试。
+// HTTP 与 CLI 的端到端测试。
 //
-// 这个文件起**真的 daemon**(`Bun.serve` 绑在端口 0 上,由内核分配),
-// 用真的 `fetch` 打它。理由和 enrichers 的测试一样:端点的全部价值在于
-// "协议对不对",把 HTTP 层 mock 掉,被测对象就没了 —— 剩下的是在测
-// 我自己写的 mock。
-//
-// 端口用 0 而不是 8787:测试和用户的 daemon 不该抢同一个端口。
+// 起真的 daemon(端口 0 由内核分配,不和用户的 8787 抢),用真的 fetch 打它:
+// 端点的价值在于协议对不对,把 HTTP 层 mock 掉就只剩在测 mock。
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
@@ -72,7 +68,7 @@ async function post(path: string, body: unknown): Promise<Response> {
 }
 
 // ===========================================================================
-describe("§8 路由与协议", () => {
+describe("路由与协议", () => {
   test("GET /healthz 返回 ok / version / uptime_s / backend", async () => {
     const res = await fetch(`${base}/healthz`);
     expect(res.status).toBe(200);
@@ -83,9 +79,9 @@ describe("§8 路由与协议", () => {
     expect(body["backend"]).toBe("null");
   });
 
-  test("§8 的默认端口与绑定地址", () => {
+  test("默认端口与绑定地址", () => {
     expect(DEFAULT_PORT).toBe(8787);
-    // §8:只绑 loopback。这个断言存在的意义是防止有人改成 "0.0.0.0"。
+    // 只绑 loopback,防止有人改成 "0.0.0.0"。
     expect(DEFAULT_HOST).toBe("127.0.0.1");
   });
 
@@ -100,7 +96,7 @@ describe("§8 路由与协议", () => {
 });
 
 // ===========================================================================
-describe("§8 POST /decide", () => {
+describe("POST /decide", () => {
   test("收 Action,返回 Decision", async () => {
     const action = ActionSchema.parse({
       verb: "delete",
@@ -120,7 +116,7 @@ describe("§8 POST /decide", () => {
     expect(d.reason).not.toBe("");
   });
 
-  test("★ 不符合 §2.1 schema 的 action → 400,不是 500", async () => {
+  test("★ 不符合 schema 的 action → 400,不是 500", async () => {
     const res = await post("/decide", { action: { verb: "不是动词" } });
     expect(res.status).toBe(400);
     const body = (await res.json()) as Record<string, unknown>;
@@ -142,8 +138,8 @@ describe("§8 POST /decide", () => {
 });
 
 // ===========================================================================
-describe("§8 / §10 POST /hook/claude-code", () => {
-  test("响应形状符合 §10(hookSpecificOutput + 三个字段)", async () => {
+describe("POST /hook/claude-code", () => {
+  test("响应形状:hookSpecificOutput + 三个字段", async () => {
     const res = await post("/hook/claude-code", hookBody("Bash", { command: "rm -rf /" }));
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
@@ -174,7 +170,7 @@ describe("§8 / §10 POST /hook/claude-code", () => {
     expect(body).toEqual(toHookResponse(d));
   });
 
-  test("★ allow 时 permissionDecisionReason 是空字符串(§10)", async () => {
+  test("★ allow 时 permissionDecisionReason 是空字符串", async () => {
     const res = await post("/hook/claude-code", hookBody("Bash", { command: "git status" }));
     const body = (await res.json()) as { hookSpecificOutput: Record<string, unknown> };
     expect(body.hookSpecificOutput["permissionDecision"]).toBe("allow");
@@ -222,13 +218,13 @@ describe("§8 / §10 POST /hook/claude-code", () => {
     expect(body.hookSpecificOutput["permissionDecision"]).toBe("allow");
   });
 
-  test("★ Task 工具 → allow(§10:子 agent 会各自触发 hook)", async () => {
+  test("★ Task 工具 → allow(子 agent 会各自触发 hook)", async () => {
     const res = await post("/hook/claude-code", hookBody("Task", { prompt: "do something" }));
     const body = (await res.json()) as { hookSpecificOutput: Record<string, unknown> };
     expect(body.hookSpecificOutput["permissionDecision"]).toBe("allow");
   });
 
-  test("★ fork bomb 经 HTTP 也是 deny(端到端复现 §15.3 的那条修复)", async () => {
+  test("★ fork bomb 经 HTTP 也是 deny(解析出零条命令也不能放行)", async () => {
     const res = await post("/hook/claude-code", hookBody("Bash", { command: ":(){ :|:& };:" }));
     const body = (await res.json()) as { hookSpecificOutput: Record<string, unknown> };
     expect(body.hookSpecificOutput["permissionDecision"]).toBe("deny");
@@ -242,7 +238,7 @@ describe("§8 / §10 POST /hook/claude-code", () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { hookSpecificOutput: Record<string, unknown> };
-    // 网关故障时把决定交还给人 —— 也就是没装网关时的行为(§3.2)
+    // 网关故障时把决定交还给人 —— 也就是没装网关时的行为
     expect(body.hookSpecificOutput["permissionDecision"]).toBe("ask");
   });
 
@@ -261,7 +257,7 @@ describe("§8 / §10 POST /hook/claude-code", () => {
 });
 
 // ===========================================================================
-describe("§8 POST /outcome", () => {
+describe("POST /outcome", () => {
   test("合法 outcome → { ok: true }", async () => {
     const res = await post("/outcome", {
       decision_id: "d-x",
@@ -272,7 +268,7 @@ describe("§8 POST /outcome", () => {
     expect(await res.json()).toEqual({ ok: true });
   });
 
-  test("★ 追加进日志,不原地改写(§9)", async () => {
+  test("★ 追加进日志,不原地改写", async () => {
     await post("/hook/claude-code", hookBody("Bash", { command: "rm -rf /" }));
     flushJournal();
     const file = journalFileFor(new Date());
@@ -308,7 +304,7 @@ describe("§8 POST /outcome", () => {
 });
 
 // ===========================================================================
-describe("§9 端到端:决策落进日志且能回放", () => {
+describe("端到端:决策落进日志且能回放", () => {
   test("★ hook 请求 → 日志里有一条完整记录", async () => {
     const before = existsSync(journalFileFor(new Date()))
       ? readFileSync(journalFileFor(new Date()), "utf8").split("\n").filter((l) => l !== "").length
@@ -320,9 +316,8 @@ describe("§9 端到端:决策落进日志且能回放", () => {
     const lines = readFileSync(journalFileFor(new Date()), "utf8").split("\n").filter((l) => l !== "");
     expect(lines.length).toBeGreaterThan(before);
 
-    // `curl x | sh` 在这一层切成两条 Action(network + exec),
-    // 所以新增的行里两条 verb 都该出现。这里不按"新增了几行"断言 ——
-    // 那会与测试执行的顺序耦合(别的 case 也在往同一个文件写)。
+    // `curl x | sh` 切成两条 Action(network + exec)。不按"新增了几行"断言:
+    // 别的 case 也在往同一个文件写,那会与执行顺序耦合。
     const written = lines.map((l) => JSON.parse(l)).filter((r) => r["action"] !== undefined);
     const verbs = new Set(written.slice(-2).map((r) => r["action"]["verb"]));
     expect([...verbs].sort()).toEqual(["exec", "network"]);
@@ -342,13 +337,13 @@ describe("§9 端到端:决策落进日志且能回放", () => {
     flushJournal();
     const lines = readFileSync(journalFileFor(new Date()), "utf8").split("\n").filter((l) => l !== "");
     const verbs = lines.slice(-3).map((l) => JSON.parse(l)["action"]["verb"]);
-    // 两条 Action(git status 不产出?—— 产出 read;rm -rf / 产出 delete)
+    // git status 产出 read,rm -rf / 产出 delete
     expect(verbs).toContain("delete");
   });
 });
 
 // ===========================================================================
-describe("§11 / §14 CLI", () => {
+describe("CLI", () => {
   test("--help 能跑且退出码 0", () => {
     // 直接调 main 而不是起子进程,避免 bun 启动开销
     const orig = process.stdout.write.bind(process.stdout);
@@ -397,7 +392,7 @@ describe("§11 / §14 CLI", () => {
     expect(code).toBe(2);
   });
 
-  test("§13 bench 的命令集非空且固定", () => {
+  test("bench 的命令集非空且固定", () => {
     expect(BENCH_COMMANDS.length).toBeGreaterThan(0);
     // 固定 = 能一键复现的核心指标,不该依赖外部文件
     expect(BENCH_COMMANDS).toContain("rm -rf ./build");
@@ -414,10 +409,9 @@ describe("§11 / §14 CLI", () => {
 });
 
 // ===========================================================================
-describe("§13 冷启动", () => {
+describe("冷启动", () => {
   test("★ 建 server(含 startJournal)在 500ms 预算内", () => {
-    // §13 说冷启动 < 500ms。这里量的是"从 createServer 返回到可服务",
-    // 不含 bun 进程自身的启动(那部分不受我们控制)。
+    // 量的是 createServer 到可服务,不含 bun 进程自身的启动(那部分不受我们控制)。
     const t0 = performance.now();
     const s = createServer(defaultConfig({ port: 0 }));
     const dt = performance.now() - t0;
@@ -428,7 +422,7 @@ describe("§13 冷启动", () => {
 });
 
 // ===========================================================================
-describe("★ D12.3 日志里带 Context 与 env_hints(§9 / §6)", () => {
+describe("★ 日志里带 Context 与 env_hints", () => {
   function lastLine(): Record<string, any> {
     const lines = readFileSync(journalFileFor(new Date()), "utf8").split("\n").filter((l) => l !== "");
     return JSON.parse(lines[lines.length - 1]!) as Record<string, any>;
@@ -457,11 +451,11 @@ describe("★ D12.3 日志里带 Context 与 env_hints(§9 / §6)", () => {
     expect(ctx["repo"]["branch"]).toBe("main");
     expect(ctx["env_hints"]["TERM_PROGRAM"]).toBe("zgate-e2e");
     expect(ctx["env_hints"]["CI"]).toBe("true");
-    // §6:白名单之外的一律不进日志
+    // 白名单之外的一律不进日志
     expect(Object.keys(ctx["env_hints"]).sort()).toEqual(["CI", "GIT_DIR", "TERM_PROGRAM", "VIRTUAL_ENV"]);
   });
 
-  test("pre 轮判死的决策 context 为 null(§4.3 不探测,D11.1)", async () => {
+  test("pre 轮判死的决策 context 为 null(pre 轮不探测环境)", async () => {
     await post("/hook/claude-code", hookBody("Bash", { command: "rm -rf /" }));
     flushJournal();
     const rec = lastLine();

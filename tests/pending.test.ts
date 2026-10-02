@@ -1,6 +1,4 @@
-// spec-m4 §0 第 5 项 —— 悬着的 ask 表。
-//
-// 这张表决定 outcome 补丁落在哪几行上,所以测的是**对得上、串不了、丢得对**:
+// 悬着的 ask 表。它决定 outcome 补丁落在哪几行上,所以测的是对得上、串不了、丢得对:
 // 同 session 同 id 才对得上;不同 session 的同一个 id 串不了;TTL 与上限丢的是该丢的。
 
 import { describe, expect, test } from "bun:test";
@@ -12,7 +10,7 @@ function clock(start = 1_000_000): { now: () => number; tick: (ms: number) => vo
   return { now: () => t, tick: (ms) => { t += ms; } };
 }
 
-describe("spec-m4 §0.5 悬着表:记与取", () => {
+describe("悬着表:记与取", () => {
   test("put 之后 take 拿回同一批 decision_id,并从表里移出", () => {
     const p = new PendingAsks();
     p.put("s1", "toolu_1", ["d1", "d2"]);
@@ -51,14 +49,14 @@ describe("spec-m4 §0.5 悬着表:记与取", () => {
     expect(p.take("s1", "toolu_1")).toEqual(["a"]);
   });
 
-  test("tool_use_id 是不透明字符串:toolu_… 与 chatcmpl-tool-… 一样对得上(D16.0)", () => {
+  test("tool_use_id 是不透明字符串:toolu_… 与 chatcmpl-tool-… 一样对得上", () => {
     const p = new PendingAsks();
     p.put("s1", "chatcmpl-tool-8f3d87991157ed19", ["a"]);
     expect(p.take("s1", "chatcmpl-tool-8f3d87991157ed19")).toEqual(["a"]);
   });
 });
 
-describe("spec-m4 §0.5 悬着表:TTL", () => {
+describe("悬着表:TTL", () => {
   test("默认 TTL 是 30 分钟,上限 10000", () => {
     expect(PENDING_TTL_MS).toBe(30 * 60 * 1000);
     expect(PENDING_MAX).toBe(10_000);
@@ -99,7 +97,7 @@ describe("spec-m4 §0.5 悬着表:TTL", () => {
   });
 });
 
-describe("spec-m4 §0.5 悬着表:上限", () => {
+describe("悬着表:上限", () => {
   test("★ 满了丢最旧的,新的一定进得去", () => {
     const p = new PendingAsks(PENDING_TTL_MS, 3);
     p.put("s", "t1", ["1"]);
@@ -121,7 +119,7 @@ describe("spec-m4 §0.5 悬着表:上限", () => {
   });
 });
 
-describe("spec-m4 §0.5 悬着表:按 session 清空(SessionEnd)", () => {
+describe("悬着表:按 session 清空(SessionEnd)", () => {
   test("★ drain 返回该 session 全部悬着的 decision_id 并移出;别的 session 不动", () => {
     const p = new PendingAsks();
     p.put("s1", "t1", ["a", "b"]);

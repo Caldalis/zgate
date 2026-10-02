@@ -1,16 +1,11 @@
-// shell 解析的「体检报告」—— 不断言，只报数。
-//
-// 为什么存在:SPEC.md §15 要求第 2 步做完汇报「哪些情况回落到 unknown」。
-// 那个比例比「测试是否全绿」更能说明解析器写得好不好:
-//   - 太高 ⇒ 解析器太保守,后面误拦率难看
-//   - 太低 ⇒ 它在硬猜,漏判风险大
-// 所以把它固化成一条可复跑的命令,每次改 shell.ts 都该看一眼数字往哪边动了。
+// shell 解析的「体检报告」—— 不断言,只报数:
 //
 //   bun run tests/corpus/measure.ts
 //
-// 语料在 commands.txt。注意它是手写的、按「Claude Code 干活时会发什么命令」
-// 的印象列的,不是真实采样。§15.7 的 journal 跑起来之后应该换成从
-// ~/.zgate/journal/ 捞的真实命令 —— 那个才是本项目自己的数字。
+// 回落 unknown 的比例比测试全绿更能说明解析器的好坏:太高 ⇒ 太保守,误拦多;太低 ⇒ 在硬猜,漏判风险大。
+// 改解析器后看一眼数字往哪边动了。
+// 语料 commands.txt 是按「Claude Code 干活时会发什么命令」的印象手写的,不是真实采样,
+// 日后应换成从 ~/.zgate/journal/ 捞的真实命令。
 
 import { parseCommand } from "../../src/shell/index.ts";
 
@@ -33,9 +28,9 @@ for (let i = 0; i < lines.length; i += 1) {
   commands.push(cmd);
 }
 
-const unknown: string[] = []; // null  ⇒ 调用方落 verb:"unknown" ⇒ SOFT(§4.2)
-const silent: string[] = []; //  []    ⇒ 不产生任何 Action,整条不进管线
-const blind: string[] = []; //   全 exec 且无目标 ⇒ 两轮规则都命中不了 ⇒ PASS
+const unknown: string[] = []; // null  ⇒ 调用方落 verb:"unknown" ⇒ SOFT
+const silent: string[] = []; //  []    ⇒ 解析器不产生 Action(适配器会补一条 unknown)
+const blind: string[] = []; //   全 exec 且无目标 ⇒ 只剩文本规则能命中,否则 PASS
 const verbs: Record<string, number> = {};
 let informative = 0;
 

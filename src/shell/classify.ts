@@ -1,30 +1,16 @@
-// SPEC.md §7 —— 「命令语义」层:一条命令叫什么、该算什么 verb、哪些参数是目标。
+// 命令语义层:一条命令叫什么、该算什么 verb、哪些参数是目标。
 //
-// 为什么单独一层(见 DECISIONS.md 的 D3.x):
-//   shell.ts 只回答**句法**问题 —— 这里面有几条命令、各自什么词、怎么重定向、
-//   哪些 token 是选项哪些是操作数。那是 shell 文法,封闭、可枚举。
-//      而「rm 是删除」「git push 是 network」「find -delete 是删除」不是文法,
-//   是**每条命令自己的语义**。它同样是封闭且确定的(有唯一正确答案),
-//   所以不该留给模型层 —— 模型层管的是「答案不在命令字符串里」的那类问题
-//   (项目简介:build 是不是软链、在不在 main、是不是生产库)。
+// 句法(几条命令、怎么重定向、哪些是选项)归 lex / ast / walker;「rm 是删除」「find -delete 是删除」
+// 是每条命令自己的语义,封闭且有唯一答案,所以放在这里,不留给模型层
+// (模型层管的是答案不在命令字符串里的问题:build 是不是软链、在不在 main)。
 //
-//   分层的直接收益:以后换 AST 只换 shell.ts 那一层,本文件一行不改。
-//   本文件是纯函数,输入「命令名 + 参数」,输出「verb + 目标规则」,没有任何状态。
-//
-// 本层不做的事:
-//   - 不碰文件系统、不 spawn、不判断危险与否
-//   - 不展开变量。命令名是 `$CMD` 时只能老实说"不知道",交给 exec/规则层
+// 纯函数,没有状态。不碰文件系统、不 spawn、不判断危险与否、不展开变量。
 
 import type { Verb } from "../core/action.ts";
 
 /**
- * 目标的来源。**不是给适配器看的**(§2.1 的 Resource 只有 kind/raw),
- * 是给规则层做证据链的:同一条命令里,`arg` 和 `redirect` 的严重程度不同 ——
- * `echo x > ~/.ssh/authorized_keys` 的写目标来自重定向,它的 verb 是 exec
- * 却被我们当成一次 write。
- *
- * 加这个字段的理由见 D8.1:规则层需要把「为什么判的」写进 reason,
- * 而 `reason` 是要直接展示给用户的一行字。
+ * 目标的来源。只活在 shell 层:适配器产出的 Resource 只有 kind/raw,规则层看不到它,
+ * 要认重定向目标得从命令原文重新提取。
  */
 export type ResourceFrom = "arg" | "redirect";
 
@@ -36,10 +22,7 @@ export interface ResourceSpec {
   readonly from?: ResourceFrom;
 }
 
-/**
- * 位置参数的取法。这是参数文法的一部分,但它由**命令自己的语义**决定
- * (grep 的第一个位置参数是模式,rm 的都是路径),所以放在本层。
- */
+/** 位置参数的取法。由命令自己的语义决定(grep 的第一个位置参数是模式,rm 的都是路径),所以放在本层。 */
 export type ArgRole =
   | "allArgs" // 所有非选项参数都是目标
   | "pathOnly" // 同上(留出语义差异的余地)
@@ -47,20 +30,11 @@ export type ArgRole =
   | "findPaths" // 到第一个表达式为止
   | "sedOperands"; // -i 时脚本是位置参数,文件在最后
 
-/**
- * 选项解析:哪些字符吃值。
- *
- * 这是本层最像"文法"的部分,但它由**命令自己的语义**决定 ——
- * `-n` 对 `nice` / `head` 吃值,对 `rm` 不吃值。所以它住在本层,
- * 和 CMD_TABLE 放在一起,而不是住在句法层。
- */
+// 选项解析:哪些字符吃值。同样由命令语义决定(`-n` 对 head 吃值、对 rm 不吃值),所以和 CMD_TABLE 放在一起。
 
 /**
- * 全命令通用的「吃值短选项」。
- *
- * 只收跨命令几乎总是带值的字符。刻意不收 f / r / l / a / x:
- * `rm -rf x`、`ls -la`、`tar -xf a.tar` 里它们是标志位,收进来会把
- * 后面的操作数整个吞掉。漏判参数比多判参数危险得多。
+ * 全命令通用的「吃值短选项」,只收跨命令几乎总是带值的字符。
+ * 刻意不收 f / r / l / a / x:`rm -rf x`、`ls -la` 里它们是标志位,收进来会吞掉后面的操作数。
  */
 const VALUE_SHORT = new Set(["o", "O", "A", "B", "C", "m", "t", "u", "g"]);
 
@@ -107,13 +81,13 @@ const FIND_EXPR = new Set([
   "-not", "-a", "-o", "-and", "-or", "-prune", "-quit", "-depth", "-follow",
 ]);
 
-/** shell.ts 的 Token 结构上满足这个接口 —— 两边共享,但本层不依赖它的实现 */
+/** lex.ts 的 Token 结构上满足这个接口,本层不依赖它的实现 */
 export interface ClassifyToken {
   readonly text: string;
   readonly quoted: boolean;
 }
 
-/** 分类结果。`null` 表示「这条命令我没看懂」,调用方必须落 unknown(§4.2)。 */
+/** 分类结果。`null` 表示「这条命令我没看懂」,调用方必须落 unknown。 */
 export type Classification =
   /** 不产生 Action(纯内建、纯赋值) */
   | { readonly kind: "silent" }
@@ -138,7 +112,7 @@ export type Classification =
   | { readonly kind: "git"; readonly args: readonly ClassifyToken[] };
 
 // ---------------------------------------------------------------------------
-// 表外可执行文件:一律 exec(§7)。下面这些表只描述"表内"的命令。
+// 表外可执行文件一律 exec。下面这些表只描述"表内"的命令。
 // ---------------------------------------------------------------------------
 
 interface Entry {
@@ -146,7 +120,7 @@ interface Entry {
   readonly role: ArgRole;
 }
 
-/** §7 的动词映射表,逐条对齐 */
+/** 命令名 → verb + 位置参数取法 */
 const CMD_TABLE: ReadonlyMap<string, Entry> = new Map<string, Entry>([
   // delete —— rm rmdir shred unlink
   ["rm", { verb: "delete", role: "pathOnly" }],
@@ -237,11 +211,8 @@ const CMD_TABLE: ReadonlyMap<string, Entry> = new Map<string, Entry>([
 ]);
 
 /**
- * 这些命令 verb 是 exec,但**位置参数仍然有意义** ——
- * `kill -9 12345` 的 pid、`lsof -i :8787` 的端口、`ss -an` 的输出范围。
- * 丢掉它们等于把"操作对象"从日志里抹掉,规则层也就无从判断
- * 「这是不是在生产机器上杀进程」。
- * 所以它们走 cmd 通道(verb=exec + pathOnly),而不是盲 exec。
+ * verb 是 exec 但位置参数有意义的命令(`kill -9 12345` 的 pid、`lsof -i :8787` 的端口)。
+ * 走 cmd 通道(verb=exec + pathOnly)而不是盲 exec,操作对象才不会从日志里抹掉。
  */
 const EXEC_WITH_ARGS = new Set([
   "kill", "pkill", "killall", "lsof", "ss", "netstat",
@@ -253,13 +224,10 @@ const EXEC_CMDS = new Set([
   "python", "python3", "node", "bun", "bunx", "npx",
   "npm", "pnpm", "yarn", "make", "cargo", "go",
   "docker", "kubectl", "systemctl", "brew", "apt", "apt-get",
-  // trap 的参数是「以后要执行的命令」,不是当下发生的事。
-  // 归 silent 等于连一条日志都不留(§15.2 体检时它是唯一一条可疑项);
-  // 归 exec 至少让规则层看见这儿有个 trap。
-  // 刻意不递归:延迟执行的命令没有当下的 turn_id,递归出来是编造假时刻(见 D2.16)。
+  // trap 的参数是以后才执行的命令:归 exec 而不是 silent,至少让规则层看见这儿有个 trap;
+  // 不递归,延迟执行的命令没有当下的 turn_id。
   "trap",
-  // echo 不读也不写文件,输出目标由重定向决定。
-  // 给它编个 read 会让 §4.5 的 PASS 白名单误以为"读了仓库内的文件"。
+  // echo 不读不写文件,输出目标由重定向决定;编个 read 会让 post 轮的 PASS 白名单误以为读了仓库内的文件。
   "echo",
 ]);
 
@@ -273,7 +241,7 @@ const SILENT_CMDS = new Set([
 /** 解释器:argv 里带内联脚本,句法层递归解析 */
 const SHELL_CMDS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
 
-/** git 二级表 —— §7:"git → 按子命令查二级表" */
+/** git 子命令 → verb */
 const GIT_TABLE: ReadonlyMap<string, Verb> = new Map<string, Verb>([
   ["status", "read"], ["diff", "read"], ["log", "read"], ["show", "read"],
   ["branch", "read"], ["ls-files", "read"], ["rev-parse", "read"],
@@ -311,9 +279,7 @@ const GIT_GLOBAL_VALUE_OPTS = new Set(["-C", "-c", "--git-dir", "--work-tree", "
 
 /**
  * 判断一条命令叫什么、算什么 verb、参数怎么取。
- *
- * `null` = 没看懂,调用方必须落 `verb: "unknown"`(§4.2)。
- * 这不是"保守",是**诚实**:兜底方向绝不能是"什么都没有"(那等于 PASS)。
+ * `null` = 没看懂,调用方必须落 `verb: "unknown"`:兜底绝不能是"什么都没有",那等于 PASS。
  *
  * @param head 命令名 token(可能带路径、可能是变量、可能是 `[`)
  * @param rest head 之后的所有 token(含选项)
@@ -324,10 +290,8 @@ export function classifyCommand(head: string, rest: readonly ClassifyToken[]): C
   while (i < rest.length && !rest[i]!.quoted && isAssignment(rest[i]!.text)) i += 1;
   const args = rest.slice(i);
 
-  // 命令名是变量(`$CMD -rf /`)—— 不展开变量就永远不知道它是什么(§7/D2.4)。
-  // 归 exec 而不是 null:它确实是"要跑一个东西",exec 是诚实的描述;
-  // 归 null 会让 `case $x in ... esac` 这类日常写法整条变打断
-  // (项目简介的判据:把良性命令变打断是产品失败,不是保守)。
+  // 命令名是变量(`$CMD -rf /`):不展开就不知道它是什么。归 exec 而不是 null ——
+  // 它确实在跑东西;归 null 会让 `case $x in ... esac` 这类日常写法整条变打断。
   if (/^\$[A-Za-z_{]/.test(head)) return { kind: "exec" };
 
   if (head === "source" || head === ".") {
@@ -355,7 +319,7 @@ export function classifyCommand(head: string, rest: readonly ClassifyToken[]): C
 
   if (EXEC_CMDS.has(head)) return { kind: "exec" };
 
-  // 表外的可执行文件 → exec(§7)
+  // 表外的可执行文件 → exec
   return { kind: "exec" };
 }
 
@@ -371,11 +335,8 @@ function hasInPlace(args: readonly ClassifyToken[]): boolean {
 }
 
 /**
- * find 的 verb 不能由命令名定,得看表达式。
- *
- * `find . -name "*.log" -delete` 若算 read,而 §4.5 的 post 轮把
- * 「read + 目标在仓库内」列进了显式 PASS 白名单 —— 那是全部漏判里
- * 唯一一条「不是没看见,而是被主动放行」的。
+ * find 的 verb 得看表达式。`find . -name "*.log" -delete` 若算 read,
+ * 会落进 post 轮「read + 目标在仓库内」的 PASS 白名单,被主动放行。
  */
 export function findVerb(args: readonly ClassifyToken[]): Verb {
   for (const tok of args) {
@@ -443,11 +404,8 @@ export function isAssignment(tok: string): boolean {
 }
 
 /**
- * 命令名得像命令。不满足就别硬猜 —— 落未知比落 exec 诚实。
- *
- * 为什么需要这条:`nice -n 10 rm -rf /` 曾经变成 exec 无目标,
- * 因为 `-n` 没被当成"吃值",于是 `10` 被当成了命令名。
- * `10` 不像命令,这里就该拒绝,而不是给一个空的 exec。
+ * 命令名得像命令,不像就别硬猜,落 unknown 比落 exec 诚实。
+ * 例如包装词的选项没剥干净时 `10` 成了命令名,这时该拒绝,而不是给一个没有目标的 exec。
  */
 export const LOOKS_LIKE_COMMAND = /^(?:\[|[A-Za-z_:][A-Za-z0-9_.+-]*)$/;
 
@@ -541,15 +499,13 @@ function operands(args: readonly ClassifyToken[], cmd: string): ClassifyToken[] 
       continue;
     }
 
-    // 短选项簇:逐字符扫,遇到第一个吃值字符就停 —— 它后面才是值。
-    // 只看最后一个字符会漏掉 `-rn` 这类组合,也可能把 `-ef` 里的 e
-    // 当成最后一位,而 e 在簇中间。
+    // 短选项簇:逐字符扫,遇到第一个吃值字符就停,它是最后一位时才吃下一个 token。
     const body = t.slice(1);
     let takesValue = false;
     for (let k = 0; k < body.length; k += 1) {
       const ch = body[k]!;
       if (VALUE_SHORT.has(ch) || extra?.has(ch) === true) {
-        takesValue = k === body.length - 1; // 只有它是最后一位时才吃下一个 token
+        takesValue = k === body.length - 1;
         break;
       }
     }
@@ -560,6 +516,6 @@ function operands(args: readonly ClassifyToken[], cmd: string): ClassifyToken[] 
 }
 
 function toSpec(tok: ClassifyToken): ResourceSpec {
-  // kind 一律 "file":这里没有文件系统信息,声称 dir 是在猜(§6 是 enricher 的活)
+  // kind 一律 "file":这里没有文件系统信息,是不是目录由 enricher 探测
   return { kind: "file", raw: tok.text };
 }

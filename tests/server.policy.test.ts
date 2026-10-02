@@ -1,4 +1,4 @@
-// spec-m3 §5 —— daemon 端到端:仓库有 .zgatepolicy 时 hook 的裁决与日志里的 policy 字段。
+// daemon 端到端:仓库有 .zgatepolicy 时 hook 的裁决与日志里的 policy 字段。
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -98,12 +98,12 @@ describe("hook 端到端(没配模型:SOFT 一律 ask)", () => {
     expect("policy" in rec).toBe(false);
   });
 
-  test("没有策略文件的仓库:行里没有 policy 键(与 M2 逐字节同形)", async () => {
+  test("没有策略文件的仓库:行里没有 policy 键", async () => {
     await hook("rm -rf ./migrations", plain);
     expect("policy" in lastLine()).toBe(false);
   });
 
-  test("agent 改策略文件:hook 回 ask,日志 source rule、没有 model_details(D15.7)", async () => {
+  test("agent 改策略文件:hook 回 ask,日志 source rule、没有 model_details", async () => {
     expect(await hook("echo 'scope: src/' >> .zgatepolicy", repo)).toBe("ask");
     const rec = lastLine();
     expect(rec["decision"]["rule_id"]).toBe("policy.self_write");

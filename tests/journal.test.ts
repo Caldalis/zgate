@@ -1,8 +1,5 @@
-// SPEC.md §9 —— journal 的测试。
-//
-// 这个文件的重点不在"能不能写进去",而在**数据能不能用**:
-// 顺序、追加语义、坏行容错、跨天、不阻塞。§9 说这份 schema 是命脉,
-// 那测试就该按"三个月后从这份数据里训模型"的标准来写。
+// journal 的测试。重点不在"能不能写进去",而在数据能不能用:
+// 顺序、追加语义、坏行容错、跨天、不阻塞 —— 按"三个月后从这份数据里训模型"的标准来写。
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -106,7 +103,7 @@ function readAll(): string {
 }
 
 // ===========================================================================
-describe("§9 日志行 schema", () => {
+describe("日志行 schema", () => {
   test("必填字段齐全,`v` 是 1", () => {
     record(action(), context(), decision());
     flushJournal();
@@ -130,16 +127,13 @@ describe("§9 日志行 schema", () => {
     expect(parsed.success).toBe(true);
   });
 
-  test("★ 字段名全是 snake_case(§2.0 的零映射层)", () => {
+  test("★ 字段名全是 snake_case(零映射层)", () => {
     record(action(), context(), decision());
     flushJournal();
     const obj = JSON.parse(readAll().trim());
 
-    // 顶层与嵌套都不许出现 camelCase。
-    //
-    // ★ 一个例外:`env_hints` 的**键**是环境变量名本身(`CI`、`GIT_DIR`),
-    //   它们天然是大写的 —— 它们不是我们的字段名,是外部世界的标识符。
-    //   把这条豁免写出来,免得以后有人"为了统一"把它改成 `ci`。
+    // 顶层与嵌套都不许出现 camelCase。例外:env_hints 的键是环境变量名本身(CI、GIT_DIR),
+    // 不是我们的字段名,别"为了统一"把它改成小写。
     const check = (o: unknown, path: string): void => {
       if (o === null || typeof o !== "object") return;
       if (Array.isArray(o)) {
@@ -179,7 +173,7 @@ describe("§9 日志行 schema", () => {
 });
 
 // ===========================================================================
-describe("§9 M2 扩展:model_details(可选字段,v 仍是 1)", () => {
+describe("可选字段 model_details(v 仍是 1)", () => {
   test("不传 model_details 时行里没有这个键(不是 null,也不是 undefined 字面量)", () => {
     record(action(), context(), decision());
     flushJournal();
@@ -197,13 +191,13 @@ describe("§9 M2 扩展:model_details(可选字段,v 仍是 1)", () => {
     expect(JournalLineSchema.safeParse(obj).success).toBe(true);
   });
 
-  test("M1 写出的行(没有 model_details)仍能过 M2 的 schema", () => {
+  test("没有 model_details 的老行仍能过 schema", () => {
     record(action(), context(), decision());
     flushJournal();
     expect(JournalLineSchema.safeParse(JSON.parse(readAll().trim())).success).toBe(true);
   });
 
-  test("★ 未知的后端名 / 错误码 / 本地裁决不丢行:老读取端读新日志只是多个不认识的值(D14.20)", () => {
+  test("★ 未知的后端名 / 错误码 / 本地裁决不丢行:老读取端读新日志只是多个不认识的值", () => {
     record(action(), context(), decision({ decision_id: "new-backend" }), new Date(), { backend: "ollama", error: "quota", local_verdict: "maybe" } as never);
     flushJournal();
     const { entries, badLines } = replay(readAll());
@@ -229,7 +223,7 @@ describe("§9 M2 扩展:model_details(可选字段,v 仍是 1)", () => {
   });
 });
 
-describe("§9 一行一条 + 追加语义", () => {
+describe("一行一条 + 追加语义", () => {
   test("★ 多条决策写多行,顺序与写入顺序一致", () => {
     for (let i = 0; i < 5; i += 1) {
       record(action({ turn_id: `turn-${i}` }), context(), decision({ decision_id: `d-${i}` }));
@@ -280,7 +274,7 @@ describe("§9 一行一条 + 追加语义", () => {
 });
 
 // ===========================================================================
-describe("§9 写入不得阻塞决策路径", () => {
+describe("写入不得阻塞决策路径", () => {
   test("★ record 不返回 Promise,也不做 IO(队列为空时文件不存在)", () => {
     record(action(), context(), decision());
     // 还没 flush:文件不该存在
@@ -310,7 +304,7 @@ describe("§9 写入不得阻塞决策路径", () => {
 });
 
 // ===========================================================================
-describe("§9 跨天与路径", () => {
+describe("跨天与路径", () => {
   test("文件名是 YYYY-MM-DD.jsonl", () => {
     const f = journalFileFor(new Date(2026, 8, 11)); // 9 月 11 日
     expect(f.endsWith("2026-09-11.jsonl")).toBe(true);
@@ -350,7 +344,7 @@ describe("§9 跨天与路径", () => {
 });
 
 // ===========================================================================
-describe("§9 回放:评测与训练数据的唯一入口", () => {
+describe("回放:评测与训练数据的唯一入口", () => {
   test("写进去再读出来,四个部分都在", () => {
     record(action(), context(), decision({ decision_id: "r-1" }));
     recordOutcome("r-1", { user_action: "approved", tool_succeeded: true });
@@ -424,7 +418,7 @@ describe("§9 回放:评测与训练数据的唯一入口", () => {
     expect(badLines).toBe(0);
   });
 
-  test("★ 乱序到达的补丁也能拼上(补丁行在原行之前)", () => {
+  test("★ 补丁行在原行之前:拼不上,也不报错(已知边界)", () => {
     // 构造:patch 在前,decision 在后(理论上不会发生,但读取端必须容错)
     const dec = JSON.stringify({
       v: 1, decision_id: "z", ts: "2026-09-11T00:00:00.000Z",
@@ -437,10 +431,8 @@ describe("§9 回放:评测与训练数据的唯一入口", () => {
       outcome: { user_action: "rejected", tool_succeeded: false },
     });
     const { entries } = replay([patch, dec].join("\n"));
-    // 这个实现是单趟扫描,补丁在前会拼不上。**这是已知边界,不是 bug**:
-    // 真实日志里补丁永远在它对应的行**之后**(它是后到的 /outcome 写的),
-    // 为不可能发生的顺序做两趟扫描只是在增加需要在训练数据上验证的代码。
-    // 断言写在这里,是为了让"哪天真遇到了"能有据可查(见 D10.3)。
+    // 单趟扫描,补丁在前拼不上 —— 已知边界,不是 bug:真实日志里补丁总在原行之后(后到的 /outcome 写的),
+    // 不为不可能的顺序做两趟扫描。断言留着,哪天真遇到了有据可查。
     expect(entries.length).toBe(1);
     expect(entries[0]?.outcome).toBeNull();
   });
@@ -459,7 +451,7 @@ describe("§9 回放:评测与训练数据的唯一入口", () => {
 });
 
 // ===========================================================================
-describe("§9 队列上限", () => {
+describe("队列上限", () => {
   test("超过上限丢最旧的,并计数", () => {
     // 不 flush,一直灌到超过上限
     for (let i = 0; i < 5200; i += 1) {
@@ -479,7 +471,7 @@ describe("§9 队列上限", () => {
 });
 
 // ===========================================================================
-describe("§9 常量与导出", () => {
+describe("常量与导出", () => {
   test("版本号是 1", () => {
     expect(JOURNAL_VERSION).toBe(1);
   });
@@ -494,7 +486,7 @@ describe("§9 常量与导出", () => {
   });
 });
 
-describe("§9 M3 扩展:policy(可选字段,v 仍是 1,spec-m3 §5 / D15.4)", () => {
+describe("可选字段 policy(v 仍是 1)", () => {
   const details = { path: "/repo/.zgatepolicy", sha256: "ab".repeat(32), bytes: 818, scope_hit: ["migrations"] };
 
   test("不传 policy 时行里没有这个键", () => {
@@ -531,7 +523,7 @@ describe("§9 M3 扩展:policy(可选字段,v 仍是 1,spec-m3 §5 / D15.4)", ()
     expect(entries[1]!.policy).toBeNull();
   });
 
-  test("M2 写出的行(没有 policy)仍过 schema;policy 里的未知键不丢行", () => {
+  test("policy 里的未知键不丢行,被剥掉", () => {
     record(action(), context(), decision({ decision_id: "new-key" }), new Date(), null, { ...details, brand_new: 1 } as never);
     flushJournal();
     const { entries, badLines } = replay(readAll());
@@ -549,7 +541,7 @@ describe("§9 M3 扩展:policy(可选字段,v 仍是 1,spec-m3 §5 / D15.4)", ()
 });
 
 // ===========================================================================
-describe("§9 M4 扩展:hook(可选字段,v 仍是 1,spec-m4 §4 / D16.0)", () => {
+describe("可选字段 hook(v 仍是 1)", () => {
   const hook = { tool_use_id: "toolu_01DBfa9trram4VTT8pV5fkNQ", permission_mode: "default", prompt_id: "a5a32a88-83a1-466e-8530-4f66c985a858" };
 
   test("不传 hook 时行里没有这个键(/decide 进来的行)", () => {
@@ -587,7 +579,7 @@ describe("§9 M4 扩展:hook(可选字段,v 仍是 1,spec-m4 §4 / D16.0)", () =
     expect(entries[0]!.hook).toEqual({ tool_use_id: "t1" });
   });
 
-  test("★ permission_mode 是开放字符串:Claude Code 加新模式不丢行(D14.20 的教训)", () => {
+  test("★ permission_mode 是开放字符串:Claude Code 加新模式不丢行", () => {
     record(action(), context(), decision({ decision_id: "new-mode" }), new Date(), null, null, { tool_use_id: "t1", permission_mode: "brandNewMode" });
     flushJournal();
     const { entries, badLines } = replay(readAll());
@@ -612,7 +604,7 @@ describe("§9 M4 扩展:hook(可选字段,v 仍是 1,spec-m4 §4 / D16.0)", () =
     expect(entries.length).toBe(0);
   });
 
-  test("M3 写出的行(没有 hook)仍过 M4 的 schema;outcome 补丁照旧按 decision_id 拼上", () => {
+  test("带 hook 的行,outcome 补丁照旧按 decision_id 拼上", () => {
     record(action(), context(), decision({ verdict: "ask", decision_id: "m3-row" }), new Date(), null, null, hook);
     recordOutcome("m3-row", { user_action: "approved", tool_succeeded: true });
     flushJournal();

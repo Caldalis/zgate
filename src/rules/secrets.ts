@@ -1,14 +1,9 @@
-// SPEC.md §4.5 —— 凭据相关规则。
+// 凭据相关规则。与 filesystem.ts 的 `fs.secret_file` 分工:
 //
-// 和 filesystem.ts 的 `fs.secret_file` 有重叠,但分界很清楚:
+//   filesystem.ts  按文件名模式判(`.env`、`*.pem`、`id_rsa`)
+//   secrets.ts     按凭据目录和内容形态判(`~/.config/gcloud`、命令行上出现的 `AKIA...`、`.git-credentials`)
 //
-//   filesystem.ts  按**文件名模式**判(`.env`、`*.pem`、`id_rsa`)
-//   secrets.ts     按**凭据目录和内容形态**判(`~/.config/gcloud`、
-//                  命令行上出现的 `AKIA...`、`.git-credentials`)
-//
-// 拆开是因为两者误报特性不同:文件名模式误报少(名字就是证据),
-// 凭据目录误报多(`~/.ssh/known_hosts` 读它完全正常),所以后者的
-// 判据要更宽但档位一样是 SOFT。
+// 凭据目录误报多(读 `~/.ssh/known_hosts` 完全正常),所以判据更宽,档位同样是 SOFT。
 
 import type { Action } from "../core/action.ts";
 import { defineRule } from "./index.ts";
@@ -17,13 +12,8 @@ import { normalize } from "./match.ts";
 import { commandLine } from "./cmdline.ts";
 
 /**
- * 云厂商密钥的**形态**识别。
- *
- * 为什么值得单列:这类字符串出现在命令行上只有一种解释 —— 有人把手里的
- * 真密钥写进了命令里。它可能是无害的(在测自己的 key 能不能用),也可能
- * 是在把 key 传给攻击者,但两种都值得问一次。
- *
- * 各家的前缀都是公开的固定格式,所以这是形态匹配而不是猜:
+ * 云厂商密钥的形态。这类字符串出现在命令行上,说明有人把真密钥写进了命令,不管意图如何都值得问一次。
+ * 各家前缀是公开的固定格式:
  *   AWS 访问键  AKIA / ASIA + 16 位
  *   GitHub      ghp_ / gho_ / ghs_ / ghr_ / github_pat_
  *   Slack       xox[baprs]-
@@ -58,14 +48,8 @@ const credentialInCommand = defineRule({
 });
 
 /**
- * 凭据存储目录的**读取**。
- *
- * 只读,档位 SOFT。理由:读凭据很可能是正当的(把 key 从旧目录迁到新
- * 目录、检查 `known_hosts`),而网关不读文件内容(§6),无从判断意图。
- * 问一次是对的。
- *
- * 写入这些目录已经在 filesystem.ts 里 HARD_DENY 了 —— **写**凭据目录
- * 没有正当场景。
+ * 读凭据存储目录 ⇒ SOFT。读凭据可能是正当的(迁移 key、检查 `known_hosts`),而网关不读文件内容,无从判断意图。
+ * 写这些目录在 filesystem.ts 里是 HARD_DENY:写凭据目录没有正当场景。
  */
 const CREDENTIAL_DIRS = [
   ".ssh",
@@ -101,14 +85,8 @@ const credentialRead = defineRule({
 });
 
 /**
- * 凭据文件被**移动/复制出去**。
- *
- * `cp ~/.ssh/id_rsa /tmp/` 和 `cat ~/.ssh/id_rsa` 危害不同:后者只是读了,
- * 前者在磁盘上留了一份副本,而副本会被同步到任何地方。所以这条判 write
- * 动词里的敏感**源**。
- *
- * shell 层对 `cp` 的产出是 write,目标是「源 + 目的」两个,所以这里
- * 按目标列表逐个看 —— 命中的可能是源也可能是目的,两种都值得问。
+ * 凭据文件被复制 / 打包。`cp ~/.ssh/id_rsa /tmp/` 比 `cat` 多留了一份副本,副本会被同步到任何地方。
+ * shell 层对 `cp` 产出 write,目标是源和目的,所以逐个看目标,命中源或目的都值得问。
  */
 const credentialCopyOut = defineRule({
   id: "secret.copy_out",

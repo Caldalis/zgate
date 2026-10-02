@@ -1,16 +1,11 @@
-// SPEC.md §6 —— `git` 探针:仓库状态。
+// git 探针:仓库状态。一个子进程都不起:起一个 `git` 要 20–50ms,而 p50 预算是 5ms。
 //
-// §6 说这是延迟风险最大的地方,理由是:起一个 `git` 子进程要 20–50ms,
-// 而 §13 的 p50 预算是 5ms。一个 `git rev-parse` 就能把整个项目的核心
-// 指标打穿。所以这里**一个子进程都不起**。
-//
-// 三件事全靠读文件:
+// 全靠读文件:
 //   - 仓库根:向上找 `.git`(目录或文件,后者是 worktree / submodule)
 //   - 分支名:`<gitdir>/HEAD` 里的 `ref: refs/heads/xxx`
 //   - 默认分支:`<commondir>/refs/remotes/origin/HEAD`,读不到去 packed-refs 翻
 //
-// 代价是拿不到"上游有没有新提交"这类需要网络的信息 —— 但那些本来也不该
-// 在决策路径上花。
+// 代价是拿不到"上游有没有新提交"这类要联网的信息,那些本来也不该在决策路径上花。
 
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -18,11 +13,8 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { RepoFacts } from "../core/context.ts";
 
 /**
- * 仓库根的缓存 TTL(§6 指定 3 秒)。
- *
- * 为什么需要缓存:cwd 在一次 session 里几乎不变,而向上找 `.git` 是
- * 每个 Action 一次。3 秒是个折中 —— 长到能覆盖一次工具调用连发的爆发,
- * 短到用户 `git init` 之后不用重启 daemon。
+ * 仓库信息的缓存 TTL。向上找 `.git` 每个 Action 一次,而 cwd 在一次 session 里几乎不变;
+ * 3 秒长到能覆盖一次工具调用连发,短到用户 `git init` 之后不用重启 daemon。
  */
 const CACHE_TTL_MS = 3000;
 
@@ -50,16 +42,9 @@ function readText(path: string): string | null {
 }
 
 /**
- * 把 `/tmp/x` 这种路径折叠成 `/private/tmp/x`。
- *
- * 为什么必须有这一步:`fs` 探针的 `resolved` 是 `realpathSync` 的结果
- * (规范路径),如果拿它去和未规范化的 `cwd` / `root` 比子树,比的是
- * **两棵不同的树**,结果恒定 false —— `inside_cwd` 和 `inside_repo`
- * 会静默失效,而规则层正是靠这两个字段判"目标在不在仓库里"。
- * 失效方向是 fail-open,所以这不是精度问题,是安全洞。
- *
- * 路径不存在时 realpath 会抛,回落到原值:宁可留着未规范化的路径,
- * 也不要因为折叠失败而丢掉整个仓库判断。
+ * 把 `/tmp/x` 这种路径折叠成 `/private/tmp/x`。fs 探针的 resolved 是规范路径,拿它和未规范化的
+ * cwd / root 比子树会恒为 false,`inside_cwd` / `inside_repo` 静默失效。这是正确性前提,不是精度问题。
+ * 路径不存在时回落原值:宁可留着未规范化的路径,也不要因为折叠失败丢掉整个仓库判断。
  */
 function canonicalize(path: string): string {
   try {
@@ -70,11 +55,8 @@ function canonicalize(path: string): string {
 }
 
 /**
- * 从 cwd 向上找 `.git`。
- *
- * 返回 gitdir 的绝对路径(对 worktree 是 `.git` 文件里指向的那个目录),
- * 以及仓库**工作区**根 —— 后者是 `inside_repo` 的判据,必须是工作区而不是
- * gitdir:在 worktree 里两者隔着整个文件系统。
+ * 从 cwd 向上找 `.git`。返回 gitdir(worktree 是 `.git` 文件里指向的目录)和工作区根;
+ * `inside_repo` 要用工作区根而不是 gitdir:在 worktree 里两者隔着整个文件系统。
  */
 function findRepo(cwd: string): { worktree: string; gitdir: string } | null {
   let dir = canonicalize(cwd);
@@ -97,10 +79,8 @@ function findRepo(cwd: string): { worktree: string; gitdir: string } | null {
     }
     const up = dirname(dir);
     if (up === dir) break; // 到根了
-    // ★ 逐级 realpath,不是只对起点做一次。
-    // 中途任何一层是软链接(最典型的是 macOS 的 `/tmp` → `/private/tmp`),
-    // 折叠后就不能直接拼 `.git` 去找了 —— 拼出来的路径在**另一棵**树里。
-    // 这不是理论问题:落进 macOS tmpdir 的仓库全都命中。
+    // 逐级 realpath,不只对起点做一次:中途某层是软链接(macOS 的 `/tmp` → `/private/tmp`)时,
+    // 直接拼 `.git` 拼出来的路径在另一棵树里。
     dir = canonicalize(up);
   }
   return null;
@@ -108,9 +88,7 @@ function findRepo(cwd: string): { worktree: string; gitdir: string } | null {
 
 /**
  * 读一个引用。先看松散引用文件,再翻 packed-refs。
- *
- * packed-refs 里查找必须整行锚定:它是**有序表**,`refs/heads/x` 是
- * `refs/heads/xy` 的前缀,不做锚定就会张冠李戴。
+ * packed-refs 里查找必须整行锚定:`refs/heads/x` 是 `refs/heads/xy` 的前缀,不锚定就会张冠李戴。
  */
 function readRef(gitdir: string, ref: string): string | null {
   const loose = readText(join(gitdir, ref));
@@ -162,12 +140,8 @@ function repoFacts(cwd: string): RepoFacts {
   const head = readText(join(found.gitdir, "HEAD"));
   const branch = head === null ? null : branchFromHead(head);
 
-  // `refs/remotes/origin/HEAD` 是符号引用,内容形如 `ref: refs/remotes/origin/main`。
-  // 有些环境下它是真实 ref(直接存 sha),那解析不出分支名 → null。
-  //
-  // origin/HEAD 不存在时(没 clone、没 `git remote set-head`)不去猜
-  // `main` 还是 `master`:猜错会让"在默认分支上 push --force"这条规则
-  // **漏判**,而返回 null 只是退回 SOFT。方向不对称,所以宁可返回 null。
+  // `refs/remotes/origin/HEAD` 是符号引用(`ref: refs/remotes/origin/main`);是真实 ref(直接存 sha)时解析不出 → null。
+  // 读不到时不猜 main / master:猜错会让"在默认分支上强推"漏判,而返回 null 只是退回 SOFT。
   const remoteRef = readRef(commondir, "refs/remotes/origin/HEAD");
   const defaultBranch = remoteRef === null ? null : branchFromRemoteHead(remoteRef);
 
@@ -175,7 +149,7 @@ function repoFacts(cwd: string): RepoFacts {
     is_repo: true,
     root: found.worktree,
     branch,
-    // §6 明说:M1 恒为 null,不要为它跑 `git status`。
+    // 恒为 null,不为它跑 `git status`
     is_dirty: null,
     default_branch: defaultBranch,
   };

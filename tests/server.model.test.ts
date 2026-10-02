@@ -1,4 +1,4 @@
-// SPEC.md §5 / §8 / §9 —— daemon 接上模型后端后的端到端:mock 后端 → hook 请求 → 日志。
+// daemon 接上模型后端后的端到端:mock 后端 → hook 请求 → 日志。
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -148,7 +148,7 @@ describe("模型段接进 daemon", () => {
     expect(recs.map((r) => r["decision"]["source"]).sort()).toEqual(["fallback", "model"]);
   });
 
-  test("★ 复合语句里逐字相同的两段:模型只问一次,两行都是 model,decision_id 不同(D14.19)", async () => {
+  test("★ 复合语句里逐字相同的两段:模型只问一次,两行都是 model,decision_id 不同", async () => {
     const out = await hook("Bash", { command: "cat .env && cat .env" });
     expect(out.permissionDecision).toBe("allow");
     expect(backend.asked.length).toBe(1);
@@ -199,7 +199,7 @@ describe("模型段接进 daemon", () => {
   });
 });
 
-describe("/decide 的兜底(D14.21):管线内部抛出时回 ask,不是 500", () => {
+describe("/decide 的兜底:管线内部抛出时回 ask,不是 500", () => {
   test("★ 让 finishStage 的 catch 块自己炸(classify 失败后读 backend.name)→ 200 + ask/fallback", async () => {
     const poison = {
       get name(): "local" {

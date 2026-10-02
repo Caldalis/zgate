@@ -1,4 +1,4 @@
-// zgate 的 opencode 插件(spec-m5)。这个文件在 **opencode 进程里**跑,不是 zgate daemon 的一部分。
+// zgate 的 opencode 插件。这个文件在 opencode 进程里跑,不是 zgate daemon 的一部分。
 //
 // 装法:复制到 ~/.config/opencode/plugins/zgate.ts(全局)或项目的 .opencode/plugins/zgate.ts;
 // 或在 opencode.json 里 "plugin": [["./.opencode/plugins/zgate.ts", { "url": "http://127.0.0.1:8787" }]]。

@@ -1,12 +1,12 @@
-// SPEC.md §5.2 B —— 云端后端:Anthropic Messages API 或任何 OpenAI-compatible 服务。
+// 云端后端:Anthropic Messages API 或任何 OpenAI-compatible 服务。
 //
 // 密钥从环境变量读,配置文件只存变量名;变量缺失在构造时就报错,让 serve 拒绝启动,
 // 而不是每次调用都 401 然后静默降级。
 //
 // 云端没有 grammar,所以用两家各自的结构化输出让服务端把回答约束成
-// `{"verdict": "allow" | "ask"}`(D14.16)。解析是严格的:整段回复必须是这一个 JSON 对象。
+// `{"verdict": "allow" | "ask"}`。解析是严格的:整段回复必须是这一个 JSON 对象。
 // 格式不对就重新生成,最多 MAX_ATTEMPTS 次;超过按格式错误抛出,管线降级为 ask。
-// 5xx / 网络错误重试一次,4xx / 429 不重试(§5.2 B.2)。置信度恒 null(§5.2 B.3)。
+// 5xx / 网络错误重试一次,4xx / 429 不重试。置信度恒为 null。
 
 import { ConfigError, type CloudConfig } from "../config.ts";
 import {
@@ -125,7 +125,7 @@ export class CloudBackend implements ModelBackend {
   /**
    * Chat Completions 的 `response_format: json_schema`;llama-server 等兼容实现也认这个形状。
    * `chat_template_kwargs` 是 llama-server 的扩展:不关 thinking 的话 Qwen3.5 会把 max_tokens
-   * 全花在 reasoning_content 里,content 空串(实测 64 token 全空)。标准 OpenAI 忽略未知键。
+   * 全花在 reasoning_content 里,content 是空串。标准 OpenAI 忽略未知键。
    */
   private async openai(req: ModelRequest, signal: AbortSignal): Promise<string> {
     const body = await this.post(
@@ -169,7 +169,7 @@ export class CloudBackend implements ModelBackend {
   }
 }
 
-/** §5.2 B.2:5xx 与网络错误重试一次;4xx / 429 / 超时 / 格式错误不走这条重试。 */
+/** 5xx 与网络错误重试一次;4xx / 429 / 超时 / 格式错误不走这条重试。 */
 export function retryable(err: unknown): boolean {
   if (err instanceof ModelHttpError) return err.status >= 500;
   if (err instanceof ModelFormatError) return false;

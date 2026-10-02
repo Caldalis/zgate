@@ -1,7 +1,6 @@
-// 命令本身就是对外部系统的破坏或外发(D15.10)。
+// 命令本身就是对外部系统的破坏或外发:数据库、云、k8s、docker、发布、远程 shell、系统级操作。
 //
-// 规则层原本只认文件 / git / 网络三类形态,数据库、云、k8s、docker、发布、远程 shell、系统级操作
-// 整段 PASS,而 PASS 不问模型(D14.2)—— "DROP TABLE 连的是测试库还是生产库"这个项目自己举的例子,模型从没见过。
+// 这些命令没有文件 / git / 网络形态,没有这组规则就整段 PASS,而 PASS 不问模型。
 // 这里全是 pre 轮 SOFT 文本规则:让这类调用到达模型。判据刻意粗,多问一次的代价远低于放过一次 terraform destroy。
 
 import type { Action } from "../core/action.ts";
@@ -32,7 +31,7 @@ const clip = (s: string, max = 24): string => (s.length <= max ? s : `${s.slice(
 // ---------------------------------------------------------------------------
 
 const DB_CLIS = new Set(["psql", "mysql", "mysqlsh", "mariadb", "sqlite3", "sqlite", "mongo", "mongosh", "redis-cli", "cqlsh", "clickhouse-client", "usql", "sqlcmd", "duckdb"]);
-/** DDL 与整表删除。INSERT / UPDATE 不算:那是日常写入,留给策略(spec-m3)去圈。 */
+/** DDL 与整表删除。INSERT / UPDATE 不算:那是日常写入,留给仓库策略去圈。 */
 const SQL_DESTRUCTIVE = /\bdrop\s+(table|database|schema|index|collection|user|role|view)\b|\btruncate\b|\bdelete\s+from\b|\balter\s+table\b|\bflushall\b|\bflushdb\b|\bdropdatabase\b|\.drop\(/;
 /** 框架 / 平台的"重置数据库":没有 SQL 字样,效果就是清库。 */
 const DB_RESET = /^(heroku pg:reset|prisma migrate reset|supabase db reset|flyway clean|php artisan (migrate:fresh|migrate:reset|db:wipe)|rails db:(drop|reset|schema:load)|(bundle exec )?rake db:(drop|reset)|alembic downgrade|knex migrate:rollback --all|drizzle-kit drop)\b/;

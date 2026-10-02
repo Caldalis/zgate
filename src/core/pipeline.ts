@@ -1,12 +1,11 @@
-// SPEC.md §3 —— 管线。
+// 决策管线:
 //
 //   Action ──▶ cache ──▶ rules(pre) ──▶ enrich ──▶ rules(post) ──▶ [model] ──▶ Decision
 //
-// enrich 在 rules 之后:pre 轮判死的命令不付探测代价。缓存套在整个规则段上
-// (D9.2),M2 起模型的结论也随同一条缓存(§3.1)。
-// 模型只看 SOFT(§5.4):HARD_DENY 是终局,PASS 直接放行,两者都不问模型。
+// enrich 在 rules 之后:pre 轮判死的命令不付探测代价。缓存套在整个规则段上,模型的结论也随同一条缓存。
+// 模型只看 SOFT:HARD_DENY 是终局,PASS 直接放行,两者都不问模型。
 //
-// 纯函数式:不碰 HTTP、日志、进程。热路径不做 zod parse(D12.4)。
+// 纯函数式:不碰 HTTP、日志、进程。热路径不做 zod parse。
 
 import type { Action } from "./action.ts";
 import type { Context } from "./context.ts";
@@ -30,7 +29,7 @@ import { evaluate, skipsModel, type RuleHit, type RuleVerdict } from "../rules/i
 import { scopeHits } from "../rules/policy.ts";
 
 export interface PipelineOptions {
-  /** 模型后端(§5)。缺省 / null = 不走模型,即 §3.2 右列。同步入口不看它 */
+  /** 模型后端。缺省 / null = 不走模型,只用规则层的结论。同步入口不看它 */
   readonly backend?: ModelBackend | null;
   /** 关掉缓存,给 golden test 与 check 用 */
   readonly noCache?: boolean;
@@ -68,7 +67,7 @@ function buildContext(action: Action, opts: PipelineOptions): Context {
 /** 一批之内逐字相同的段(复合语句的两个 exec 段)共用一份规则段结论,key 与缓存同一把。 */
 type Batch = Map<string, RuleStage>;
 
-/** 缓存 salt:分支名;有策略时再拼 sha,策略一改立即换 key(spec-m3 §2.4)。无策略时与 M2 逐字节相同。 */
+/** 缓存 salt:分支名;有策略时再拼 sha,策略一改立即换 key。 */
 function saltOf(branch: string | null, policy: Policy | null): string {
   const b = branch ?? "";
   return policy === null ? b : `${b}\0${policy.sha256}`;
@@ -77,7 +76,7 @@ function saltOf(branch: string | null, policy: Policy | null): string {
 /**
  * 跑规则段:cache ──▶ rules(pre) ──▶ enrich ──▶ rules(post)。
  * `salt` 是分支名(加策略 sha),查缓存之前就要知道(git 探针与策略加载都自带 3 秒缓存,成本接近零)。
- * 传了 `batch` 时,批内重复的段直接复用先前那条,不查缓存也不重算(D14.19)。
+ * 传了 `batch` 时,批内重复的段直接复用先前那条,不查缓存也不重算。
  */
 function runRules(action: Action, opts: PipelineOptions, batch?: Batch): RuleStage {
   const started = performance.now();
@@ -93,7 +92,7 @@ function runRules(action: Action, opts: PipelineOptions, batch?: Batch): RuleSta
   return stage;
 }
 
-/** 策略只随跑过 post 轮的结论走:pre 判死没有 Context,也就没有策略这回事(spec-m3 §5)。 */
+/** 策略只随跑过 post 轮的结论走:pre 判死没有 Context,也就没有策略这回事。 */
 function policyOf(context: Context | null, action: Action, policy: Policy | null): Pick<RuleStage, "policy" | "policyHit"> {
   if (context === null || policy === null) return { policy: null, policyHit: [] };
   return { policy, policyHit: scopeHits(action, context, policy) };
@@ -119,8 +118,8 @@ function computeStage(action: Action, opts: PipelineOptions, salt: string, polic
 
   const context = buildContext(action, opts);
   const post = evaluate(action, context, "post");
-  // 同档 pre 优先(spec-m3 §3.3):两轮同为 SOFT 时以 pre 为 hit。不然 `scope: .` 会把 `git reset --hard`
-  // 标成 policy.scope,策略文本进了本不该进的 prompt。既有用例里两轮同 SOFT 的是 0 条(D15.2)。
+  // 同档 pre 优先:两轮同为 SOFT 时以 pre 为 hit。不然 `scope: .` 会把 `git reset --hard`
+  // 标成 policy.scope,策略文本进了本不该进的 prompt。
   const hit = pre.verdict === "SOFT" && post.verdict !== "HARD_DENY" ? pre : post;
   if (opts.noCache !== true) setCached(action, hit, context, salt);
 
@@ -137,9 +136,9 @@ type ModelOutcome =
 /** 一条 Action 的判定结果:Decision,加上判它时看到的 Context 与规则段的档位。 */
 export interface Decided {
   readonly decision: Decision;
-  /** pre 轮判死时为 null。§9 的日志要它 */
+  /** pre 轮判死时为 null。日志要记它 */
   readonly context: Context | null;
-  /** 规则段的结论。M2 起 verdict 不再能反推它(D13.2) */
+  /** 规则段的结论。模型参与后 verdict 反推不出它 */
   readonly ruleVerdict: RuleVerdict;
   /** 模型参与时才有,进 journal 的 model_details */
   readonly modelDetails: ModelDetails | null;
@@ -172,7 +171,7 @@ function assemble(stage: RuleStage, outcome: ModelOutcome, modelMs: number, newI
   }
 
   if (hit.verdict === "SOFT" && outcome.kind === "skipped") {
-    // 规则自己说了不问模型(skipModel,D15.7):这不是降级,是规则层的结论,source 记 rule
+    // 规则自己说了不问模型(skipModel):这不是降级,是规则层的结论,source 记 rule
     return {
       decision: { ...base, verdict: "ask", reason: hit.reason, source: stage.cached ? "cache" : "rule", confidence: null },
       context: stage.context,
@@ -183,8 +182,7 @@ function assemble(stage: RuleStage, outcome: ModelOutcome, modelMs: number, newI
   }
 
   if (hit.verdict === "SOFT" && outcome.kind === "failed") {
-    // §3.2 / §5.4:模型超时或不可达,降级到 ask。理由仍是规则的那句,
-    // 用户要看的是"为什么问",括号里补一句降级原因。
+    // 模型超时或不可达,降级到 ask。理由仍是规则的那句,括号里补一句降级原因。
     return {
       decision: { ...base, verdict: "ask", reason: `${hit.reason}(${outcome.cause})`, source: "fallback", confidence: 0 },
       context: stage.context,
@@ -215,7 +213,7 @@ function withoutModel(stage: RuleStage): ModelOutcome {
   return stage.hit.verdict === "SOFT" && skipsModel(stage.hit.rule_id) ? { kind: "skipped" } : { kind: "none" };
 }
 
-/** 同步判一条:只有规则段,不问模型(§3.2 右列)。check / bench / golden 用。 */
+/** 同步判一条:只有规则段,不问模型。check / bench / golden 用。 */
 export function decideWithContext(action: Action, opts: PipelineOptions = {}): Decided {
   const stage = runRules(action, opts);
   return assemble(stage, withoutModel(stage), 0, opts.newId ?? defaultNewId);
@@ -225,7 +223,7 @@ export function decideAction(action: Action, opts: PipelineOptions = {}): Decisi
   return decideWithContext(action, opts).decision;
 }
 
-/** §3.2 的降级场景,给 reason 一句话、给 journal 一个码。 */
+/** 模型失败的降级原因:给 reason 一句话、给 journal 一个码。 */
 function failureOf(err: unknown): { cause: string; details: Omit<ModelDetails, "backend"> } {
   if (isAbortError(err)) return { cause: "模型超时", details: { error: "timeout" } };
   if (err instanceof ModelFormatError) return { cause: "模型输出异常", details: { error: "format" } };
@@ -238,7 +236,7 @@ function failureOf(err: unknown): { cause: string; details: Omit<ModelDetails, "
 
 /**
  * 规则段之后接模型段。只有 SOFT 且 `consult` 为真才问模型;
- * 超时 / 异常按 §3.2 降级,不向上抛。超时用 AbortController 真的断开请求。
+ * 超时 / 异常降级为 ask,不向上抛。超时用 AbortController 真的断开请求。
  */
 async function finishStage(
   action: Action,
@@ -256,7 +254,7 @@ async function finishStage(
   }
 
   const context = stage.context ?? buildContext(action, opts);
-  // 策略文本只在这条调用是 SOFT **仅仅**因为策略时进 prompt(spec-m3 §1 第 3 条);后端不做判断
+  // 策略文本只在这条调用是 SOFT 仅仅因为策略时进 prompt;由这里决定,后端不做判断
   const policy =
     stage.hit.rule_id === "policy.scope" && stage.policy !== null ? { policy: stage.policy, scopeHit: stage.policyHit } : null;
   const req = { action, context, flaggedRule: stage.hit.rule_id, policy };
@@ -288,13 +286,13 @@ export interface BatchItem extends Decided {
 
 export interface BatchResult {
   readonly decision: Decision;
-  /** 判出最终结论的那条 Action 的序号(§7 的"取最严");空批为 -1 */
+  /** 判出最终结论(最严)的那条 Action 的序号;空批为 -1 */
   readonly winningIndex: number;
   readonly perAction: readonly BatchItem[];
 }
 
 function emptyBatch(newId: () => string): BatchResult {
-  // §15.3 的约定:零条 Action = 没有要裁决的东西 = allow。
+  // 零条 Action = 没有要裁决的东西 = allow。
   const decision: Decision = {
     verdict: "allow", reason: "", source: "rule", rule_id: null,
     confidence: null, latency_ms: 0, decision_id: newId(),
@@ -303,7 +301,7 @@ function emptyBatch(newId: () => string): BatchResult {
 }
 
 /**
- * 一批 Action 取最严(一次 Bash 可能切出多条,§7)。整体结论的 verdict /
+ * 一批 Action 取最严(一次 Bash 可能切出多条)。整体结论的 verdict /
  * reason / rule_id / confidence 来自胜出那条,latency 是各条之和,
  * decision_id 重新生成 —— 它是这一批的决策。
  */
@@ -324,7 +322,7 @@ function combine(perAction: readonly BatchItem[], newId: () => string): BatchRes
   return { decision, winningIndex: index, perAction };
 }
 
-/** 批内重复的段复用先前那条的结论,只换 decision_id;它没花时间,latency 记 0(D14.19)。 */
+/** 批内重复的段复用先前那条的结论,只换 decision_id;它没花时间,latency 记 0。 */
 function reissue(prior: Decided, newId: () => string): Decided {
   return { ...prior, decision: { ...prior.decision, decision_id: newId(), latency_ms: 0 } };
 }
@@ -350,8 +348,8 @@ export function decideAll(actions: readonly Action[], opts: PipelineOptions = {}
  * 异步判一批:规则段 + 模型段。
  * 先把每条的规则段都跑完:有一条 HARD_DENY 整批就是 deny,谁都不问模型。
  * 然后按序问模型;一旦某条落到 ask,整批已经是 ask,后面的 SOFT 不再问
- * (省的是几百毫秒,不是钱),它们按 §3.2 右列记 ask。
- * 批内逐字相同的段只算一次、只问一次模型(D14.19)。
+ * (省的是几百毫秒,不是钱),它们按没配模型处理,记 ask。
+ * 批内逐字相同的段只算一次、只问一次模型。
  */
 export async function decideAllAsync(actions: readonly Action[], opts: PipelineOptions = {}): Promise<BatchResult> {
   const newId = opts.newId ?? defaultNewId;

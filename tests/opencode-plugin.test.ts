@@ -1,4 +1,4 @@
-// spec-m5 —— opencode 插件本身:对着一个 mock 的 zgate 与一个假的 opencode client,验证三条路与转发。
+// opencode 插件本身:对着一个 mock 的 zgate 与一个假的 opencode client,验证三条路与转发。
 // 插件在 opencode 进程里跑,这里直接调用它返回的 hooks。
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
