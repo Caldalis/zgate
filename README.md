@@ -28,7 +28,7 @@ Regex rules only see strings: `rm -rf ./build` always looks safe, even when `bui
 - **Rules**: certain dangers such as `rm -rf /`, fork bombs, `curl … | sh` and writes to `~/.ssh` are denied outright and can't be overridden; anything uncertain is asked about, never allowed by default
 - **Environment probes**: real paths, symlinks, cwd and repo membership, current and default git branch; probes only read files and never spawn processes
 - **Hand-written shell parser**: splits compound commands, strips wrappers like `sudo` and `env`, unwraps `bash -c`, and finds redirect targets
-- **Optional model layer**: sees only the uncertain calls; works with a local llama-server, Anthropic or OpenAI-compatible APIs, or a chain that tries local first and escalates to the cloud when confidence is low
+- **Optional model layer**: sees only the uncertain calls; works with a local llama-server (chat models, or llama.cpp decision models via `/v1/systemone`), Anthropic or OpenAI-compatible APIs, or a chain that tries local first and escalates to the cloud when confidence is low
 - **Repo policy**: a plain-language `.zgatepolicy` at the repo root; calls inside its scope go to the model along with the policy, and a policy can only tighten
 - **Outcome signals**: whether you approved an `ask` is matched back into the journal, so you can see how often the gate was too cautious
 - **Integrations**: Claude Code (http hook) and opencode (in-process plugin)
@@ -132,6 +132,8 @@ llama-server -m Qwen3.5-9B-Q4_K_M.gguf --port 8899 -c 4096 -np 1 --jinja
 { "model": { "backend": "local",
   "local": { "base_url": "http://127.0.0.1:8899", "timeout_ms": 2000 } } }
 ```
+
+**Decision models** (llama.cpp v0.6.0 and later): add `"api": "systemone"` to `local` and zgate calls llama-server's `/v1/systemone`, where the model scores `allow` and `ask` instead of generating text. On our eval set, Kev-4B was about 1.5× faster than the 9B but let 3 of 12 risky calls through, and lev let 4 through; the 9B let none through, so it remains the recommendation.
 
 **Cloud** (Anthropic Messages API; set `provider` to `"openai"` for OpenAI, and add `base_url` for any OpenAI-compatible service). The config holds the name of an environment variable, never the key itself:
 

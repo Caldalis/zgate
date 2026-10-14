@@ -28,7 +28,7 @@
 - 规则层:`rm -rf /`、fork bomb、`curl … | sh`、写 `~/.ssh` 等确定危险直接拒绝,不可推翻;拿不准一律问,不默认放行
 - 环境探针:真实路径、软链接、cwd 与仓库归属、git 分支与默认分支;只读文件,不起子进程
 - 手写 shell 解析:切分复合语句、剥 `sudo` / `env` 等包装、还原 `bash -c`、认出重定向目标
-- 可选模型层:只判拿不准的调用,支持本地 llama-server、Anthropic / OpenAI 兼容 API,以及本地优先、低置信度升级云端的 chain
+- 可选模型层:只判拿不准的调用,支持本地 llama-server(对话模型,或经 `/v1/systemone` 的 llama.cpp 决策模型)、Anthropic / OpenAI 兼容 API,以及本地优先、低置信度升级云端的 chain
 - 仓库策略:仓库根放一份自然语言的 `.zgatepolicy`,它圈定的范围交给模型按策略判;策略只能收紧
 - 结果信号:判了 `ask` 之后用户是否点了通过,会被对回日志,积累"网关判过头了多少"的数据
 - 接入 Claude Code(http hook)与 opencode(进程内插件)
@@ -132,6 +132,8 @@ llama-server -m Qwen3.5-9B-Q4_K_M.gguf --port 8899 -c 4096 -np 1 --jinja
 { "model": { "backend": "local",
   "local": { "base_url": "http://127.0.0.1:8899", "timeout_ms": 2000 } } }
 ```
+
+**决策模型**(llama.cpp v0.6.0 及以上):在 `local` 里加 `"api": "systemone"`,zgate 改走 llama-server 的 `/v1/systemone`,模型直接给 `allow` / `ask` 打分,不生成文字。在我们的评测集上,Kev-4B 比 9B 快约 1.5 倍,但 12 条该问的放过了 3 条,lev 放过 4 条;9B 一条没放,所以仍推荐 9B。
 
 **云端**(Anthropic Messages API;`provider` 设为 `"openai"` 可接 OpenAI,再配 `base_url` 可接任何 OpenAI 兼容服务)。配置只存环境变量名,不存密钥:
 

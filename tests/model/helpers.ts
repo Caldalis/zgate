@@ -92,4 +92,21 @@ export function llamaResponse(
   };
 }
 
+/** llama-server /v1/systemone 一道 choice 题的响应形状(实测 llama.cpp b11429)。 */
+export function systemOneResponse(pAllow: number, id = "verdict"): unknown {
+  const pAsk = 1 - pAllow;
+  return {
+    model: "test-decision",
+    answers: {
+      [id]: {
+        type: "choice",
+        choice: pAllow >= pAsk ? "allow" : "ask",
+        probabilities: { allow: pAllow, ask: pAsk },
+        confidence: Math.abs(pAllow - pAsk),
+      },
+    },
+    usage: { input_tokens: 420, output_tokens: 0 },
+  };
+}
+
 export const never = (): Promise<Response> => new Promise(() => {});

@@ -17,6 +17,8 @@ export const LocalConfigSchema = z.object({
   base_url: z.string(),
   timeout_ms: TimeoutSchema,
   model_name: z.string().optional(),
+  // chat(默认):通用模型走 /v1/chat/completions;systemone:llama.cpp 的决策模型走 /v1/systemone
+  api: z.enum(["chat", "systemone"]).optional(),
 });
 export type LocalConfig = z.infer<typeof LocalConfigSchema>;
 

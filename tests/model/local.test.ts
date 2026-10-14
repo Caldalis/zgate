@@ -3,8 +3,17 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import { LocalBackend, confidenceOf } from "../../src/model/local.ts";
 import { ModelFormatError, ModelHttpError, withDeadline } from "../../src/core/model.ts";
-import { SYSTEM_PROMPT } from "../../src/model/prompt.ts";
-import { json, llamaResponse, mockServer, never, request, type MockServer } from "./helpers.ts";
+import type { Policy } from "../../src/policy.ts";
+import {
+  DECISION_CRITERIA,
+  DECISION_INSTRUCTIONS,
+  POLICY_BEGIN,
+  POLICY_END,
+  POLICY_FRAMING,
+  SYSTEM_PROMPT,
+  userPrompt,
+} from "../../src/model/prompt.ts";
+import { json, llamaResponse, mockServer, never, request, systemOneResponse, type MockServer } from "./helpers.ts";
 
 let srv: MockServer | null = null;
 afterEach(() => {
@@ -142,5 +151,87 @@ describe("降级场景都以异常上报", () => {
     c.abort();
     await expect(backend(srv.url).classify(request(), c.signal)).rejects.toBeInstanceOf(Error);
     expect(srv.seen.length).toBe(0);
+  });
+});
+
+describe("api: systemone(决策模型)", () => {
+  const decision = (url: string, timeout = 1000) =>
+    new LocalBackend({ base_url: url, timeout_ms: timeout, model_name: "test-kev", api: "systemone" });
+
+  test("★ 走 /v1/systemone:state 是 userPrompt 原文,一道 choice 题,只有 allow / ask 两个选项", async () => {
+    srv = mockServer(() => json(systemOneResponse(0.2)));
+    const req = request();
+    await decision(srv.url).classify(req, NO_ABORT);
+    const [seen] = srv.seen;
+    expect(seen?.path).toBe("/v1/systemone");
+    expect(Object.keys(seen?.body ?? {})).toEqual(["state", "questions"]);
+    expect(seen?.body["state"]).toBe(userPrompt(req));
+    expect(seen?.body["questions"]).toEqual({
+      verdict: { type: "choice", instructions: DECISION_INSTRUCTIONS, criteria: DECISION_CRITERIA },
+    });
+    expect(Object.keys(DECISION_CRITERIA)).toEqual(["allow", "ask"]);
+  });
+
+  test("★ 一次请求;confidence 是 choice 那个选项的概率,不是服务器的 confidence 字段", async () => {
+    srv = mockServer(() => json(systemOneResponse(0.12)));
+    const d = await decision(srv.url).classify(request(), NO_ABORT);
+    expect(srv.seen.length).toBe(1);
+    expect(d.verdict).toBe("ask");
+    expect(d.confidence).toBeCloseTo(0.88, 9);
+    expect(d.details).toEqual({ backend: "local", model_name: "test-kev", local_latency_ms: d.latency_ms });
+  });
+
+  test("allow 的置信度是 P(allow)", async () => {
+    srv = mockServer(() => json(systemOneResponse(0.7)));
+    const d = await decision(srv.url).classify(request(), NO_ABORT);
+    expect(d.verdict).toBe("allow");
+    expect(d.confidence).toBeCloseTo(0.7, 9);
+  });
+
+  test("有策略:策略块追加在 instructions 之后,与 chat 的 system 同一种拼法", async () => {
+    srv = mockServer(() => json(systemOneResponse(0.1)));
+    const text = "- 不要动 migrations/。\nscope: migrations/\n";
+    const policy: Policy = { path: "/repo/.zgatepolicy", text, scope: [], sha256: "x", bytes: text.length, truncated: false, warnings: [] };
+    const req = { ...request(), flaggedRule: "policy.scope", policy: { policy, scopeHit: ["migrations"] } };
+    await decision(srv.url).classify(req, NO_ABORT);
+    const q = (srv.seen[0]?.body["questions"] as { verdict: { instructions: string } }).verdict;
+    expect(q.instructions).toBe(`${DECISION_INSTRUCTIONS}\n\n${POLICY_FRAMING}\n${POLICY_BEGIN}\n${text.trimEnd()}\n${POLICY_END}`);
+    expect(srv.seen[0]?.body["state"]).toContain('"policy_scope_hit"');
+  });
+
+  test("没给 probabilities → confidence null,choice 照用", async () => {
+    srv = mockServer(() => json({ answers: { verdict: { type: "choice", choice: "ask" } } }));
+    const d = await decision(srv.url).classify(request(), NO_ABORT);
+    expect(d.verdict).toBe("ask");
+    expect(d.confidence).toBeNull();
+  });
+
+  test("★ choice 不是 allow / ask、缺 answers、不是 JSON → ModelFormatError", async () => {
+    for (const body of [{ answers: { verdict: { choice: "deny", probabilities: { deny: 1 } } } }, { answers: {} }, {}]) {
+      srv?.stop();
+      srv = mockServer(() => json(body));
+      await expect(decision(srv.url).classify(request(), NO_ABORT)).rejects.toBeInstanceOf(ModelFormatError);
+    }
+    srv?.stop();
+    srv = mockServer(() => new Response("<html>", { status: 200 }));
+    await expect(decision(srv.url).classify(request(), NO_ABORT)).rejects.toBeInstanceOf(ModelFormatError);
+  });
+
+  test("服务器跑的不是决策模型(501)→ ModelHttpError 带状态码", async () => {
+    srv = mockServer(() => json({ error: { code: 501, message: "not a decision model" } }, 501));
+    await expect(decision(srv.url).classify(request(), NO_ABORT)).rejects.toMatchObject({ status: 501 });
+  });
+
+  test("超时照样由 signal 断开", async () => {
+    srv = mockServer(never);
+    const b = decision(srv.url, 100);
+    await expect(withDeadline(null, b.timeoutMs, (s) => b.classify(request(), s))).rejects.toMatchObject({ name: "TimeoutError" });
+  });
+
+  test("api 不写或写 chat 都走 /v1/chat/completions", async () => {
+    srv = mockServer(() => json(llamaResponse("ask", { allow: -2.9, ask: -0.06 })));
+    await new LocalBackend({ base_url: srv.url, timeout_ms: 1000, api: "chat" }).classify(request(), NO_ABORT);
+    await backend(srv.url).classify(request(), NO_ABORT);
+    expect(srv.seen.map((s) => s.path)).toEqual(["/v1/chat/completions", "/v1/chat/completions"]);
   });
 });

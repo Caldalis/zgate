@@ -50,6 +50,26 @@ describe("schema", () => {
     expect(ConfigSchema.safeParse(mk(5000)).success).toBe(true);
   });
 
+  test("local.api 只认 chat / systemone,不写就是 chat;chain 的 local 同样可以配", () => {
+    const mk = (api: unknown) => ({ model: { backend: "local", local: { base_url: "http://x", timeout_ms: 1000, api } } });
+    expect(ConfigSchema.safeParse(mk("chat")).success).toBe(true);
+    expect(ConfigSchema.safeParse(mk("systemone")).success).toBe(true);
+    expect(ConfigSchema.safeParse(mk("completion")).success).toBe(false);
+    expect((createBackend({ backend: "local", local: { base_url: "http://x", timeout_ms: 1000 } }) as LocalBackend).api).toBe("chat");
+    const chain = parseConfig(
+      JSON.stringify({
+        model: {
+          backend: "chain",
+          chain: {
+            local: { base_url: "http://x", timeout_ms: 1000, api: "systemone" },
+            cloud: { provider: "openai", api_key_env: "K", model: "m", timeout_ms: 3000 },
+          },
+        },
+      }),
+    );
+    expect(((createBackend(chain.model, { K: "sk" }) as ChainBackend).local as LocalBackend).api).toBe("systemone");
+  });
+
   test("★ chain 的 local + cloud 超时之和不能超过 5000(否则云端拿不到自己的预算)", () => {
     const mk = (l: number, c: number) => ({
       model: { backend: "chain", chain: { local: { base_url: "http://x", timeout_ms: l }, cloud: { provider: "openai", api_key_env: "K", model: "m", timeout_ms: c } } },

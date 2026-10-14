@@ -23,7 +23,7 @@ import { clearCache } from "./core/cache.ts";
 import { gitFacts } from "./enrichers/git.ts";
 import { POLICY_FILENAME, loadPolicy } from "./policy.ts";
 import { ConfigError, configPath, configWarnings, loadConfig, type Config } from "./config.ts";
-import { createBackend } from "./model/index.ts";
+import { ChainBackend, LocalBackend, createBackend } from "./model/index.ts";
 import { loadEvalCases, runEvalCase, summarize as summarizeEval, type EvalCase, type EvalResult } from "./eval.ts";
 import { toActions, type HookInput } from "./adapters/claude-code.ts";
 import { createServer, defaultConfig, VERSION } from "./server.ts";
@@ -113,7 +113,9 @@ function loadBackend(): { config: Config; backend: ModelBackend | null } | null 
 
 function describeBackend(backend: ModelBackend | null): string {
   if (backend === null) return "null(没配模型,SOFT 一律 ask)";
-  return `${backend.name},超时 ${backend.timeoutMs}ms`;
+  const local = backend instanceof ChainBackend ? backend.local : backend;
+  const api = local instanceof LocalBackend && local.api === "systemone" ? "(本地走 /v1/systemone)" : "";
+  return `${backend.name}${api},超时 ${backend.timeoutMs}ms`;
 }
 
 function cmdServe(args: Args): number {
