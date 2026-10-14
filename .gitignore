@@ -1,3 +1,7 @@
 node_modules/
 .DS_Store
 *.log
+
+# 本地资料:推广素材、模型实验(不进仓库)
+launch/
+experiments/
