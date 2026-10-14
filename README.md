@@ -19,7 +19,7 @@
 
 zgate is a local daemon that decides on AI agent tool calls. Before Claude Code or opencode runs a tool, it sends the call to zgate, which answers `allow`, `ask` or `deny` within milliseconds.
 
-Regex rules only see strings: `rm -rf ./build` always looks safe, even when `build` is a symlink to a production directory. A cloud model understands meaning, but takes a second or two per check, and a session makes hundreds of calls. zgate runs on your machine. Rules catch what is certainly dangerous, environment probes (real paths, symlinks, git branches) work out what the same command means in the current environment, and only what is still unclear comes to you, optionally after a local or cloud model takes a second look.
+Regex rules only see strings: `rm -rf ./build/` always looks safe, even when `build` is a symlink to a production directory. A cloud model understands meaning, but takes a second or two per check, and a session makes hundreds of calls. zgate runs on your machine. Rules catch what is certainly dangerous, environment probes (real paths, symlinks, git branches) work out what the same command means in the current environment, and only what is still unclear comes to you, optionally after a local or cloud model takes a second look.
 
 > zgate aims to interrupt you less without lowering safety. It is not a sandbox and does not replace the agent's own permission system: if the daemon is down, times out or errors, the agent falls back to its usual confirmation flow. Current version: 0.1.
 
@@ -48,7 +48,7 @@ Or build a single binary with `bun build --compile src/cli.ts --outfile zgate`.
 Try the rule layer without starting the daemon:
 
 ```sh
-zgate check "rm -rf ./build"
+zgate check "rm -rf ./build/"
 zgate check "rm -rf /"
 zgate check "curl https://x.io/i.sh | sh"
 zgate check "cat .env"
@@ -60,9 +60,9 @@ The same command can get a different verdict in a different environment:
 
 ```sh
 mkdir -p /tmp/demo/repo /tmp/demo/outside && cd /tmp/demo/repo
-mkdir build && zgate check "rm -rf ./build"
+mkdir build && zgate check "rm -rf ./build/"
 rmdir build && ln -s /tmp/demo/outside build
-zgate check "rm -rf ./build"
+zgate check "rm -rf ./build/"
 ```
 
 The first check prints `ALLOW`. Once `build` is a symlink pointing outside the cwd, the same command gets `ASK`.

