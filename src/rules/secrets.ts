@@ -6,6 +6,7 @@
 // 凭据目录误报多(读 `~/.ssh/known_hosts` 完全正常),所以判据更宽,档位同样是 SOFT。
 
 import type { Action } from "../core/action.ts";
+import { t } from "../i18n.ts";
 import { defineRule } from "./index.ts";
 import type { Rule } from "./index.ts";
 import { normalize } from "./match.ts";
@@ -41,7 +42,7 @@ const credentialInCommand = defineRule({
     if (cmd === "") return null;
     const text = normalize(cmd).toLowerCase();
     for (const re of CREDENTIAL_PATTERNS) {
-      if (re.test(text)) return "命令行中包含凭据";
+      if (re.test(text)) return t("命令行中包含凭据", "command line contains a credential");
     }
     return null;
   },
@@ -70,15 +71,15 @@ const credentialRead = defineRule({
   verdict: "SOFT",
   match(action: Action): string | null {
     if (action.verb !== "read") return null;
-    for (const t of action.targets) {
-      const p = t.raw.toLowerCase();
+    for (const target of action.targets) {
+      const p = target.raw.toLowerCase();
       // 去掉 `~` / `$HOME` / 前导斜杠,只留相对段
       const rel = p.replace(/^~\/?/, "").replace(/^\$\{?home\}?\/?/, "").replace(/^\/+/, "");
       for (const d of CREDENTIAL_DIRS) {
-        if (rel === d || rel.startsWith(d + "/")) return `读取凭据目录 ${d}`;
+        if (rel === d || rel.startsWith(d + "/")) return t(`读取凭据目录 ${d}`, `reads credentials directory ${d}`);
       }
       // 绝对路径下也按段认
-      if (/(^|\/)\.(ssh|aws|gnupg|kube)\//.test(p)) return "读取凭据目录";
+      if (/(^|\/)\.(ssh|aws|gnupg|kube)\//.test(p)) return t("读取凭据目录", "reads a credentials directory");
     }
     return null;
   },
@@ -99,11 +100,11 @@ const credentialCopyOut = defineRule({
     if (!/\bcp\b|\bmv\b|\brsync\b|\btar\b|\bzip\b|\bscp\b|\bcat\b|\bbase64\b/.test(cmd)) {
       return null;
     }
-    for (const t of action.targets) {
-      const p = t.raw.toLowerCase();
+    for (const target of action.targets) {
+      const p = target.raw.toLowerCase();
       const rel = p.replace(/^~\/?/, "").replace(/^\$\{?home\}?\/?/, "").replace(/^\/+/, "");
       for (const d of CREDENTIAL_DIRS) {
-        if (rel === d || rel.startsWith(d + "/")) return "凭据文件被复制或打包";
+        if (rel === d || rel.startsWith(d + "/")) return t("凭据文件被复制或打包", "copies or archives credential files");
       }
     }
     return null;

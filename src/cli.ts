@@ -26,9 +26,12 @@ import { ConfigError, configPath, configWarnings, loadConfig, type Config } from
 import { ChainBackend, LocalBackend, createBackend } from "./model/index.ts";
 import { loadEvalCases, runEvalCase, summarize as summarizeEval, type EvalCase, type EvalResult } from "./eval.ts";
 import { toActions, type HookInput } from "./adapters/claude-code.ts";
+import { lang, t } from "./i18n.ts";
 import { createServer, defaultConfig, VERSION } from "./server.ts";
 
-const USAGE = `zgate ${VERSION} — 本地 Agent 工具调用决策网关
+function usage(): string {
+  return t(
+    `zgate ${VERSION} — 本地 Agent 工具调用决策网关
 
 用法:
   zgate serve [--port N] [--host H]
@@ -58,7 +61,45 @@ const USAGE = `zgate ${VERSION} — 本地 Agent 工具调用决策网关
       量的是 Claude Code 看到的端到端延迟。
 
   zgate --help / --version
-`;
+
+输出语言跟随 LANG:zh 开头用中文,否则用英文;ZGATE_LANG=zh 或 en 可以强制指定。
+`,
+    `zgate ${VERSION} — local decision gateway for AI agent tool calls
+
+Usage:
+  zgate serve [--port N] [--host H]
+      Run the daemon (default 127.0.0.1:8787). Claude Code calls it through an http hook.
+      The model backend is set in ~/.zgate/config.json (or ZGATE_CONFIG); without a config file only the rule layer runs.
+
+  zgate check <command>... [--cwd DIR] [--json] [--model]
+      Judge one command and print the verdict, the reason and the state of the repo's .zgatepolicy. Writes no journal.
+      With --model, a call the rule layer marks SOFT goes through the configured model once.
+      Example: zgate check "rm -rf ./build"
+
+  zgate journal replay [file]
+      Rebuild a day's JSONL into an array of {action, context, decision, outcome}.
+      Uses today's file when none is given. This is the only entry point for evaluation and training data.
+
+  zgate journal stats [file] [--json]
+      Count a day's journal: how often you were asked and how often you approved (by rule_id × source),
+      to check that the outcome signal is wired up.
+
+  zgate eval [--cases FILE] [--json]
+      Run the configured model over tests/eval/cases.yaml (21 hand-labeled SOFT cases) and print agreement,
+      misses (allowed when it should ask), over-asking and latency. This is how the model numbers are reproduced;
+      --cases tests/eval/policy.yaml runs the 10 policy cases.
+
+  zgate bench [--n N] [--json] [--http]
+      Run N mixed requests and print p50/p95/p99. Measures the in-process pipeline by default;
+      --http starts a real daemon (port 0) and posts to /hook/claude-code over HTTP,
+      which is the end-to-end latency Claude Code sees.
+
+  zgate --help / --version
+
+Output follows LANG: Chinese when it starts with zh, English otherwise. Set ZGATE_LANG=zh or en to override.
+`,
+  );
+}
 
 interface Args {
   readonly positional: string[];
@@ -100,11 +141,11 @@ function flagString(args: Args, name: string, fallback: string): string {
 function loadBackend(): { config: Config; backend: ModelBackend | null } | null {
   try {
     const config = loadConfig();
-    for (const w of configWarnings(config)) process.stderr.write(`配置警告:${w}\n`);
+    for (const w of configWarnings(config)) process.stderr.write(t(`配置警告:${w}\n`, `config warning: ${w}\n`));
     return { config, backend: createBackend(config.model) };
   } catch (err) {
     if (err instanceof ConfigError) {
-      process.stderr.write(`配置错误:${err.message}\n`);
+      process.stderr.write(t(`配置错误:${err.message}\n`, `config error: ${err.message}\n`));
       return null;
     }
     throw err;
@@ -112,10 +153,10 @@ function loadBackend(): { config: Config; backend: ModelBackend | null } | null 
 }
 
 function describeBackend(backend: ModelBackend | null): string {
-  if (backend === null) return "null(没配模型,SOFT 一律 ask)";
+  if (backend === null) return t("null(没配模型,SOFT 一律 ask)", "null (no model configured; SOFT is always ask)");
   const local = backend instanceof ChainBackend ? backend.local : backend;
-  const api = local instanceof LocalBackend && local.api === "systemone" ? "(本地走 /v1/systemone)" : "";
-  return `${backend.name}${api},超时 ${backend.timeoutMs}ms`;
+  const api = local instanceof LocalBackend && local.api === "systemone" ? t("(本地走 /v1/systemone)", " (local via /v1/systemone)") : "";
+  return t(`${backend.name}${api},超时 ${backend.timeoutMs}ms`, `${backend.name}${api}, timeout ${backend.timeoutMs}ms`);
 }
 
 function cmdServe(args: Args): number {
@@ -130,15 +171,26 @@ function cmdServe(args: Args): number {
   });
 
   const server = createServer(config);
-  console.log(`zgate ${VERSION} 监听 http://${config.host}:${server.port}`);
-  console.log(`journal 目录:${journalDir()}`);
-  console.log(`配置文件:${configPath()}`);
-  console.log(`backend:${describeBackend(config.backend)}`);
+  const url = `http://${config.host}:${server.port ?? config.port}`;
+  console.log(t(`zgate ${VERSION} 监听 http://${config.host}:${server.port}`, `zgate ${VERSION} listening on http://${config.host}:${server.port}`));
+  console.log(t(`journal 目录:${journalDir()}`, `journal dir: ${journalDir()}`));
+  console.log(t(`配置文件:${configPath()}`, `config file: ${configPath()}`));
+  console.log(t(`backend:${describeBackend(config.backend)}`, `backend: ${describeBackend(config.backend)}`));
   console.log("");
-  console.log("把这段加进 Claude Code 的 settings.json 即可接入(五段同一个 URL;只配 PreToolUse 也能拦,但没有结果信号):");
+  console.log(
+    t(
+      "把这段加进 Claude Code 的 settings.json 即可接入(五段同一个 URL;只配 PreToolUse 也能拦,但没有结果信号):",
+      "Add this to Claude Code's settings.json to connect (all five events use the same URL; PreToolUse alone can gate calls, but gives no outcome signal):",
+    ),
+  );
   console.log(JSON.stringify(hookSettingsSnippet(config.host, server.port ?? config.port), null, 2));
   console.log("");
-  console.log(`opencode:把仓库里的 plugins/opencode/zgate.ts 复制到 ~/.config/opencode/plugins/,设 ZGATE_URL=http://${config.host}:${server.port ?? config.port}(默认 8787 可不设),见 README。`);
+  console.log(
+    t(
+      `opencode:把仓库里的 plugins/opencode/zgate.ts 复制到 ~/.config/opencode/plugins/,设 ZGATE_URL=${url}(默认 8787 可不设),见 README。`,
+      `opencode: copy plugins/opencode/zgate.ts from this repo to ~/.config/opencode/plugins/ and set ZGATE_URL=${url} (not needed for the default 8787); see the README.`,
+    ),
+  );
   return 0;
 }
 
@@ -180,7 +232,7 @@ function actionsFor(command: string, cwd: string): readonly Action[] {
 async function cmdCheck(args: Args): Promise<number> {
   const words = args.positional.slice(1);
   if (words.length === 0) {
-    process.stderr.write("zgate check 需要一条命令\n");
+    process.stderr.write(t("zgate check 需要一条命令\n", "zgate check needs a command\n"));
     return 2;
   }
   // 不带引号的 `zgate check rm -rf ./build` 已被 shell 切成多个 argv,拼回去比要求用户加引号友好。
@@ -194,7 +246,9 @@ async function cmdCheck(args: Args): Promise<number> {
     const loaded = loadBackend();
     if (loaded === null) return 1;
     backend = loaded.backend;
-    if (backend === null) process.stderr.write(`配置文件 ${configPath()} 没配 model,只跑规则层\n`);
+    if (backend === null) {
+      process.stderr.write(t(`配置文件 ${configPath()} 没配 model,只跑规则层\n`, `${configPath()} has no model configured; running the rule layer only\n`));
+    }
   }
 
   const actions = actionsFor(command, cwd);
@@ -209,15 +263,16 @@ async function cmdCheck(args: Args): Promise<number> {
   }
 
   const parsed = parseCommand(command);
-  process.stdout.write(`命令:${command}\n`);
-  process.stdout.write(`cwd:${cwd}\n`);
-  process.stdout.write(`策略:${describePolicy(cwd)}\n`);
+  process.stdout.write(t(`命令:${command}\n`, `command: ${command}\n`));
+  process.stdout.write(t(`cwd:${cwd}\n`, `cwd: ${cwd}\n`));
+  process.stdout.write(t(`策略:${describePolicy(cwd)}\n`, `policy: ${describePolicy(cwd)}\n`));
   if (parsed === null) {
-    process.stdout.write("解析:失败(⇒ verb unknown ⇒ 未知即 SOFT)\n");
+    process.stdout.write(t("解析:失败(⇒ verb unknown ⇒ 未知即 SOFT)\n", "parse: failed (⇒ verb unknown ⇒ unknown means SOFT)\n"));
   } else if (parsed.length === 0) {
-    process.stdout.write("解析:成功,零条命令(⇒ 适配器兜成 unknown)\n");
+    process.stdout.write(t("解析:成功,零条命令(⇒ 适配器兜成 unknown)\n", "parse: ok, zero commands (⇒ the adapter falls back to unknown)\n"));
   } else {
-    process.stdout.write(`解析:${parsed.length} 条\n`);
+    const n = parsed.length;
+    process.stdout.write(t(`解析:${n} 条\n`, `parse: ${n} ${n === 1 ? "command" : "commands"}\n`));
     for (const c of parsed) {
       const targets = c.targets.map((t) => t.raw).join(", ");
       process.stdout.write(`  - ${c.verb}${targets === "" ? "" : ` → ${targets}`}\n`);
@@ -233,7 +288,10 @@ async function cmdCheck(args: Args): Promise<number> {
     if (decision.rule_id !== null) process.stdout.write(`, rule=${decision.rule_id}`);
     if (decision.confidence !== null) process.stdout.write(`, confidence=${decision.confidence.toFixed(3)}`);
     process.stdout.write(`, ${decision.latency_ms.toFixed(3)}ms)\n`);
-    if (policy?.scope_hit !== undefined) process.stdout.write(`  命中 scope:${policy.scope_hit.join(", ")}\n`);
+    if (policy?.scope_hit !== undefined) {
+      const hits = policy.scope_hit.join(", ");
+      process.stdout.write(t(`  命中 scope:${hits}\n`, `  scope hit: ${hits}\n`));
+    }
   }
   return 0;
 }
@@ -241,11 +299,17 @@ async function cmdCheck(args: Args): Promise<number> {
 /** 一行策略状态:check 打印一行就够,不另做 `zgate policy` 子命令。加载器的警告自己走 stderr。 */
 function describePolicy(cwd: string): string {
   const root = gitFacts(cwd).root;
-  if (root === null) return `cwd 不在 git 仓库里,不找 ${POLICY_FILENAME}`;
+  if (root === null) return t(`cwd 不在 git 仓库里,不找 ${POLICY_FILENAME}`, `cwd is not in a git repo; not looking for ${POLICY_FILENAME}`);
   const p = loadPolicy(root);
-  if (p === null) return `无(${join(root, POLICY_FILENAME)} 不存在,或是软链接)`;
-  const scope = p.scope.length === 0 ? "没有 scope 条目,策略对裁决不起作用" : `scope ${p.scope.map((s) => s.entry).join(", ")}`;
-  return `${p.path}(${p.bytes} 字节${p.truncated ? ",已截断到 4096" : ""},sha256 ${p.sha256.slice(0, 12)};${scope})`;
+  const file = join(root, POLICY_FILENAME);
+  if (p === null) return t(`无(${file} 不存在,或是软链接)`, `none (${file} does not exist or is a symlink)`);
+  const scope =
+    p.scope.length === 0
+      ? t("没有 scope 条目,策略对裁决不起作用", "no scope entries, so the policy does not affect verdicts")
+      : `scope ${p.scope.map((s) => s.entry).join(", ")}`;
+  const sha = p.sha256.slice(0, 12);
+  const cut = p.truncated ? t(",已截断到 4096", ", truncated to 4096") : "";
+  return t(`${p.path}(${p.bytes} 字节${cut},sha256 ${sha};${scope})`, `${p.path} (${p.bytes} bytes${cut}, sha256 ${sha}; ${scope})`);
 }
 
 // ---------------------------------------------------------------------------
@@ -256,9 +320,9 @@ function cmdReplay(args: Args): number {
   const file = args.positional[2] ?? journalFileFor(new Date());
   const { entries, badLines } = replayFile(file);
   process.stdout.write(JSON.stringify(entries, null, 2) + "\n");
-  process.stderr.write(`\n${entries.length} 条记录`);
-  if (badLines > 0) process.stderr.write(`,${badLines} 行无法解析(已跳过)`);
-  process.stderr.write(`\n文件:${file}\n`);
+  process.stderr.write(t(`\n${entries.length} 条记录`, `\n${entries.length} entries`));
+  if (badLines > 0) process.stderr.write(t(`,${badLines} 行无法解析(已跳过)`, `, ${badLines} unparseable lines (skipped)`));
+  process.stderr.write(t(`\n文件:${file}\n`, `\nfile: ${file}\n`));
   return 0;
 }
 
@@ -277,23 +341,47 @@ function cmdStats(args: Args): number {
   }
 
   const w = process.stdout.write.bind(process.stdout);
-  w(`zgate journal stats  文件:${file}\n`);
-  w(`决策 ${st.total} 行:allow ${st.by_verdict.allow} / ask ${st.by_verdict.ask} / deny ${st.by_verdict.deny};带 hook 的 ${st.with_hook} 行`);
-  if (badLines > 0) w(`;${badLines} 行无法解析(已跳过)`);
+  const v = st.by_verdict;
+  w(t(`zgate journal stats  文件:${file}\n`, `zgate journal stats  file: ${file}\n`));
+  w(
+    t(
+      `决策 ${st.total} 行:allow ${v.allow} / ask ${v.ask} / deny ${v.deny};带 hook 的 ${st.with_hook} 行`,
+      `${st.total} decisions: allow ${v.allow} / ask ${v.ask} / deny ${v.deny}; ${st.with_hook} with a hook`,
+    ),
+  );
+  if (badLines > 0) w(t(`;${badLines} 行无法解析(已跳过)`, `; ${badLines} unparseable lines (skipped)`));
   w("\n\n");
   if (st.asked === 0) {
-    w("还没有问过用户的记录。\n");
+    w(t("还没有问过用户的记录。\n", "No asks recorded yet.\n"));
     return 0;
   }
-  w(`问了 ${st.asked} 次:通过 ${st.approved}(其中工具失败 ${st.approved_failed})、拒绝 ${st.rejected}、unknown ${st.unknown}、没有结果 ${st.pending}\n\n`);
-  w(`${"rule_id".padEnd(30)} ${"source".padEnd(9)} ${"问了".padStart(5)} ${"通过".padStart(5)} ${"工具失败".padStart(6)} ${"拒绝".padStart(5)} ${"unknown".padStart(8)} ${"无结果".padStart(6)}\n`);
+  w(
+    t(
+      `问了 ${st.asked} 次:通过 ${st.approved}(其中工具失败 ${st.approved_failed})、拒绝 ${st.rejected}、unknown ${st.unknown}、没有结果 ${st.pending}\n\n`,
+      `asked ${st.asked} times: approved ${st.approved} (tool failed in ${st.approved_failed}), rejected ${st.rejected}, unknown ${st.unknown}, pending ${st.pending}\n\n`,
+    ),
+  );
+  // 中文表头按汉字宽度凑的列,英文表头与数据同宽
+  w(
+    t(
+      `${"rule_id".padEnd(30)} ${"source".padEnd(9)} ${"问了".padStart(5)} ${"通过".padStart(5)} ${"工具失败".padStart(6)} ${"拒绝".padStart(5)} ${"unknown".padStart(8)} ${"无结果".padStart(6)}\n`,
+      `${"rule_id".padEnd(30)} ${"source".padEnd(9)} ${"asked".padStart(6)} ${"approved".padStart(9)} ${"failed".padStart(7)} ${"rejected".padStart(9)} ${"unknown".padStart(8)} ${"pending".padStart(8)}\n`,
+    ),
+  );
+  const [wAsked, wApproved, wFailed, wRejected] = lang() === "zh" ? ([6, 6, 9, 6] as const) : ([6, 9, 7, 9] as const);
   for (const r of st.rows) {
     w(
-      `${r.rule_id.padEnd(30)} ${r.source.padEnd(9)} ${String(r.asked).padStart(6)} ${String(r.approved).padStart(6)} ${String(r.approved_failed).padStart(9)}` +
-        ` ${String(r.rejected).padStart(6)} ${String(r.unknown).padStart(8)} ${String(r.pending).padStart(8)}\n`,
+      `${r.rule_id.padEnd(30)} ${r.source.padEnd(9)} ${String(r.asked).padStart(wAsked)} ${String(r.approved).padStart(wApproved)} ${String(r.approved_failed).padStart(wFailed)}` +
+        ` ${String(r.rejected).padStart(wRejected)} ${String(r.unknown).padStart(8)} ${String(r.pending).padStart(8)}\n`,
     );
   }
-  w("\n没有结果 = 悬着的 ask 没等到会话结束(daemon 重启、超过 30 分钟、老版本 Claude Code 没有 tool_use_id)。unknown = 会话结束或调用落定时仍没通过;拒绝 v1 不推断。\n");
+  w(
+    t(
+      "\n没有结果 = 悬着的 ask 没等到会话结束(daemon 重启、超过 30 分钟、老版本 Claude Code 没有 tool_use_id)。unknown = 会话结束或调用落定时仍没通过;拒绝 v1 不推断。\n",
+      "\npending = the ask never saw its session end (daemon restart, over 30 minutes, or an old Claude Code without tool_use_id). " +
+        "unknown = the session ended or the call settled without an approval; v1 does not infer rejections.\n",
+    ),
+  );
   return 0;
 }
 
@@ -353,17 +441,23 @@ function reportBench(
     return ok ? 0 : 1;
   }
   const f = (x: number) => x.toFixed(3).padStart(8);
-  const title = mode === "http" ? "HTTP 端到端(含 body 解析与 hook 响应)" : "进程内管线";
-  process.stdout.write(`zgate bench  mode=${title}  n=${n}  cwd=${cwd}\n\n`);
-  process.stdout.write(`               p50      p95      p99      max\n`);
-  process.stdout.write(`冷(无缓存) ${f(c.p50)} ${f(c.p95)} ${f(c.p99)} ${f(c.max)}   ms\n`);
-  process.stdout.write(`热(带缓存) ${f(w.p50)} ${f(w.p95)} ${f(w.p99)} ${f(w.max)}   ms\n\n`);
-  process.stdout.write(`预算:      p50 < 5ms   p99 < 30ms\n`);
-  process.stdout.write(`冷路径:    p50 ${c.p50 < 5 ? "✓" : "✗"}   p99 ${c.p99 < 30 ? "✓" : "✗"}\n`);
+  const row = (s: Summary) => `${f(s.p50)} ${f(s.p95)} ${f(s.p99)} ${f(s.max)}   ms`;
+  const mark = (good: boolean) => (good ? "✓" : "✗");
+  const title =
+    mode === "http" ? t("HTTP 端到端(含 body 解析与 hook 响应)", "HTTP end to end (with body parsing and the hook response)") : t("进程内管线", "in-process pipeline");
+  const out = process.stdout.write.bind(process.stdout);
+  out(`zgate bench  mode=${title}  n=${n}  cwd=${cwd}\n\n`);
+  // 中文标签按汉字宽度对齐,英文标签统一占 16 列
+  const budget = `p50 ${mark(c.p50 < 5)}   p99 ${mark(c.p99 < 30)}`;
+  out(t(`               p50      p95      p99      max\n`, `${" ".repeat(21)}p50      p95      p99      max\n`));
+  out(t(`冷(无缓存) ${row(c)}\n`, `cold (no cache) ${row(c)}\n`));
+  out(t(`热(带缓存) ${row(w)}\n\n`, `warm (cached)   ${row(w)}\n\n`));
+  out(t(`预算:      p50 < 5ms   p99 < 30ms\n`, `budget:         p50 < 5ms   p99 < 30ms\n`));
+  out(t(`冷路径:    ${budget}\n`, `cold path:      ${budget}\n`));
   if (mode === "pipeline") {
-    process.stdout.write(`\n这是**进程内**管线耗时,不含 HTTP 与 body 解析;加 --http 量端到端。\n`);
+    out(t("\n这是**进程内**管线耗时,不含 HTTP 与 body 解析;加 --http 量端到端。\n", "\nThis is **in-process** pipeline time, without HTTP or body parsing; add --http to measure end to end.\n"));
   } else {
-    process.stdout.write(`\n这是 loopback 上 fetch 往返的耗时,Claude Code 看到的延迟不会低于它。\n`);
+    out(t("\n这是 loopback 上 fetch 往返的耗时,Claude Code 看到的延迟不会低于它。\n", "\nThis is the fetch round trip over loopback; the latency Claude Code sees is at least this.\n"));
   }
   return ok ? 0 : 1;
 }
@@ -476,14 +570,20 @@ async function cmdEval(args: Args): Promise<number> {
   try {
     cases = loadEvalCases(readFileSync(file, "utf8"));
   } catch (err) {
-    process.stderr.write(`读不了用例文件 ${file}:${(err as Error).message}\n`);
+    const msg = (err as Error).message;
+    process.stderr.write(t(`读不了用例文件 ${file}:${msg}\n`, `cannot read cases file ${file}: ${msg}\n`));
     return 2;
   }
   const loaded = loadBackend();
   if (loaded === null) return 1;
   const backend = loaded.backend;
   if (backend === null) {
-    process.stderr.write(`配置文件 ${configPath()} 没配 model,只跑规则层:所有 SOFT 都是 ask,只能检查用例是否都是 SOFT\n`);
+    process.stderr.write(
+      t(
+        `配置文件 ${configPath()} 没配 model,只跑规则层:所有 SOFT 都是 ask,只能检查用例是否都是 SOFT\n`,
+        `${configPath()} has no model configured; running the rule layer only: every SOFT case is ask, so this only checks that the cases are SOFT\n`,
+      ),
+    );
   }
 
   // 固定目录:同一台机器上两次运行的 prompt 逐字相同,数字才可复现
@@ -501,17 +601,23 @@ async function cmdEval(args: Args): Promise<number> {
       process.stdout.write(JSON.stringify({ backend: describeBackend(backend), cases: file, results, summary }, null, 2) + "\n");
       return 0;
     }
-    process.stdout.write(`zgate eval  backend=${describeBackend(backend)}  用例=${file}  n=${cases.length}\n`);
-    if (backend !== null) process.stdout.write("(先预热 1 次,不计入)\n");
+    const be = describeBackend(backend);
+    process.stdout.write(t(`zgate eval  backend=${be}  用例=${file}  n=${cases.length}\n`, `zgate eval  backend=${be}  cases=${file}  n=${cases.length}\n`));
+    if (backend !== null) process.stdout.write(t("(先预热 1 次,不计入)\n", "(one warm-up call first, not counted)\n"));
     process.stdout.write("\n");
-    process.stdout.write(`${"id".padEnd(36)} ${"标签".padEnd(6)} ${"规则".padEnd(10)} ${"结论".padEnd(6)} ${"P(裁决)".padEnd(8)} ${"延迟".padStart(8)}  判定\n`);
+    process.stdout.write(
+      t(
+        `${"id".padEnd(36)} ${"标签".padEnd(6)} ${"规则".padEnd(10)} ${"结论".padEnd(6)} ${"P(裁决)".padEnd(8)} ${"延迟".padStart(8)}  判定\n`,
+        `${"id".padEnd(36)} ${"label".padEnd(6)} ${"rule".padEnd(10)} ${"got".padEnd(6)} ${"conf".padEnd(8)} ${"latency".padStart(8)}  result\n`,
+      ),
+    );
     for (const r of results) {
       const mark =
-        r.rule_verdict !== "SOFT" ? "非 SOFT,模型没参与"
-        : r.error !== undefined ? `降级(${r.error})`
+        r.rule_verdict !== "SOFT" ? t("非 SOFT,模型没参与", "not SOFT, model not involved")
+        : r.error !== undefined ? t(`降级(${r.error})`, `degraded (${r.error})`)
         : r.verdict === r.label ? "✓"
-        : r.label === "ask" ? "✗ 该问却放行"
-        : "✗ 误打断";
+        : r.label === "ask" ? t("✗ 该问却放行", "✗ allowed but should ask")
+        : t("✗ 误打断", "✗ asked needlessly");
       const conf = r.confidence === null ? "-" : r.confidence.toFixed(3);
       process.stdout.write(
         `${r.id.padEnd(36)} ${r.label.padEnd(6)} ${r.rule_verdict.padEnd(10)} ${r.verdict.padEnd(6)} ${conf.padEnd(8)} ${`${r.latency_ms.toFixed(0)}ms`.padStart(8)}  ${mark}\n`,
@@ -519,11 +625,18 @@ async function cmdEval(args: Args): Promise<number> {
     }
     const p = (x: number | null): string => (x === null ? "-" : `${x.toFixed(0)}ms`);
     process.stdout.write("\n");
+    const s = summary;
+    const lat = `p50 ${p(s.p50_ms)} p95 ${p(s.p95_ms)}`;
     process.stdout.write(
-      `一致 ${summary.agree}/${summary.soft}   该问却放行 ${summary.missed}/${summary.missed_of}   误打断 ${summary.over_asked}/${summary.over_asked_of}` +
-        `   降级 ${summary.degraded}   延迟 p50 ${p(summary.p50_ms)} p95 ${p(summary.p95_ms)}\n`,
+      t(
+        `一致 ${s.agree}/${s.soft}   该问却放行 ${s.missed}/${s.missed_of}   误打断 ${s.over_asked}/${s.over_asked_of}   降级 ${s.degraded}   延迟 ${lat}\n`,
+        `agree ${s.agree}/${s.soft}   allowed but should ask ${s.missed}/${s.missed_of}   asked needlessly ${s.over_asked}/${s.over_asked_of}   degraded ${s.degraded}   latency ${lat}\n`,
+      ),
     );
-    if (summary.non_soft.length > 0) process.stdout.write(`非 SOFT 用例(规则直接定性,模型没参与):${summary.non_soft.join(", ")}\n`);
+    if (s.non_soft.length > 0) {
+      const ids = s.non_soft.join(", ");
+      process.stdout.write(t(`非 SOFT 用例(规则直接定性,模型没参与):${ids}\n`, `non-SOFT cases (decided by the rules, model not involved): ${ids}\n`));
+    }
     return 0;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -545,7 +658,7 @@ export function main(argv: readonly string[]): number | Promise<number> {
     return 0;
   }
   if (cmd === undefined || args.flags.has("help") || cmd === "help") {
-    process.stdout.write(USAGE);
+    process.stdout.write(usage());
     return 0;
   }
 
@@ -558,8 +671,10 @@ export function main(argv: readonly string[]): number | Promise<number> {
       const sub = args.positional[1];
       if (sub === "replay") return cmdReplay(args);
       if (sub === "stats") return cmdStats(args);
-      process.stderr.write(`未知的 journal 子命令:${sub ?? "(空)"}\n`);
-      process.stderr.write("用法:zgate journal replay [file] | zgate journal stats [file] [--json]\n");
+      process.stderr.write(t(`未知的 journal 子命令:${sub ?? "(空)"}\n`, `unknown journal subcommand: ${sub ?? "(none)"}\n`));
+      process.stderr.write(
+        t("用法:zgate journal replay [file] | zgate journal stats [file] [--json]\n", "usage: zgate journal replay [file] | zgate journal stats [file] [--json]\n"),
+      );
       return 2;
     }
     case "bench":
@@ -567,8 +682,8 @@ export function main(argv: readonly string[]): number | Promise<number> {
     case "eval":
       return cmdEval(args);
     default:
-      process.stderr.write(`未知命令:${cmd}\n\n`);
-      process.stdout.write(USAGE);
+      process.stderr.write(t(`未知命令:${cmd}\n\n`, `unknown command: ${cmd}\n\n`));
+      process.stdout.write(usage());
       return 2;
   }
 }

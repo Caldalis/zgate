@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import type { Action } from "./action.ts";
 import type { Context } from "./context.ts";
+import { t } from "../i18n.ts";
 import type { Policy } from "../policy.ts";
 
 export const BACKEND_NAMES = ["local", "cloud", "chain"] as const;
@@ -101,7 +102,7 @@ export async function withDeadline<T>(
     else parent.addEventListener("abort", onParentAbort, { once: true });
   }
   const timer = setTimeout(
-    () => controller.abort(new DOMException(`模型超时(${ms}ms)`, "TimeoutError")),
+    () => controller.abort(new DOMException(t(`模型超时(${ms}ms)`, `model timed out (${ms}ms)`), "TimeoutError")),
     ms,
   );
   try {

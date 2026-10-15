@@ -9,6 +9,8 @@ import { isAbsolute, join } from "node:path";
 
 import { z } from "zod";
 
+import { t } from "./i18n.ts";
+
 export const POLICY_FILENAME = ".zgatepolicy";
 export const MAX_POLICY_BYTES = 4096;
 /** 与 git 探针一致。 */
@@ -62,10 +64,10 @@ export function policyDetails(policy: Policy, scopeHit: readonly string[]): Poli
 const SCOPE_LINE = /^\s*scope:(.*)$/;
 
 function invalidReason(raw: string): string | null {
-  if (raw === "") return "为空";
-  if (isAbsolute(raw) || raw.startsWith("/")) return "绝对路径";
-  if (raw.includes("..")) return "含 ..";
-  if (/[*?[{]/.test(raw)) return "含通配符(v1 不做 glob,写目录)";
+  if (raw === "") return t("为空", "empty");
+  if (isAbsolute(raw) || raw.startsWith("/")) return t("绝对路径", "absolute path");
+  if (raw.includes("..")) return t("含 ..", "contains ..");
+  if (/[*?[{]/.test(raw)) return t("含通配符(v1 不做 glob,写目录)", "contains a wildcard (globs are not supported; name a directory)");
   return null;
 }
 
@@ -85,7 +87,7 @@ export function parseScope(text: string, root: string): { scope: ScopeEntry[]; w
     const raw = (m[1] ?? "").trim();
     const why = invalidReason(raw);
     if (why !== null) {
-      warnings.push(`忽略 scope 条目 "${raw}":${why}`);
+      warnings.push(t(`忽略 scope 条目 "${raw}":${why}`, `ignoring scope entry "${raw}": ${why}`));
       continue;
     }
     const entry = normalizeEntry(raw);
@@ -111,8 +113,12 @@ function readPolicyFile(path: string, root: string): { policy: Policy | null; wa
   } catch {
     return { policy: null, warnings: [] };
   }
-  if (st.isSymbolicLink()) return { policy: null, warnings: [`策略文件 ${path} 是软链接,按不存在处理`] };
-  if (!st.isFile()) return { policy: null, warnings: [`策略文件 ${path} 不是普通文件,按不存在处理`] };
+  if (st.isSymbolicLink()) {
+    return { policy: null, warnings: [t(`策略文件 ${path} 是软链接,按不存在处理`, `policy file ${path} is a symlink; treating it as absent`)] };
+  }
+  if (!st.isFile()) {
+    return { policy: null, warnings: [t(`策略文件 ${path} 不是普通文件,按不存在处理`, `policy file ${path} is not a regular file; treating it as absent`)] };
+  }
 
   let bytes: number;
   let chunk: Buffer;
@@ -131,7 +137,14 @@ function readPolicyFile(path: string, root: string): { policy: Policy | null; wa
   const sha256 = new Bun.CryptoHasher("sha256").update(text).digest("hex");
   const parsed = parseScope(text, root);
   const warnings = [...parsed.warnings];
-  if (truncated) warnings.push(`策略文件超过 ${MAX_POLICY_BYTES} 字节(共 ${bytes}),只读前 ${MAX_POLICY_BYTES} 字节`);
+  if (truncated) {
+    warnings.push(
+      t(
+        `策略文件超过 ${MAX_POLICY_BYTES} 字节(共 ${bytes}),只读前 ${MAX_POLICY_BYTES} 字节`,
+        `policy file exceeds ${MAX_POLICY_BYTES} bytes (${bytes} in total); only the first ${MAX_POLICY_BYTES} are read`,
+      ),
+    );
+  }
   return { policy: { path, text, scope: parsed.scope, sha256, bytes, truncated, warnings }, warnings };
 }
 
@@ -161,7 +174,7 @@ export function loadPolicy(root: string | null): Policy | null {
   const key = `${path}\0${policy?.sha256 ?? "-"}`;
   if (warnings.length > 0 && !warned.has(key)) {
     warned.add(key);
-    for (const w of warnings) process.stderr.write(`策略警告:${w}\n`);
+    for (const w of warnings) process.stderr.write(t(`策略警告:${w}\n`, `policy warning: ${w}\n`));
   }
   return policy;
 }

@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { BACKEND_NAMES, MODEL_TIMEOUT_CAP_MS } from "./core/model.ts";
+import { t } from "./i18n.ts";
 
 const TimeoutSchema = z.number().min(100).max(5000);
 
@@ -45,7 +46,10 @@ export const ChainConfigSchema = z
       ctx.addIssue({
         code: "custom",
         path: ["cloud", "timeout_ms"],
-        message: `local.timeout_ms + cloud.timeout_ms = ${sum},超过 ${MODEL_TIMEOUT_CAP_MS}(hook 总超时),云端拿不到配置里写的预算`,
+        message: t(
+          `local.timeout_ms + cloud.timeout_ms = ${sum},超过 ${MODEL_TIMEOUT_CAP_MS}(hook 总超时),云端拿不到配置里写的预算`,
+          `local.timeout_ms + cloud.timeout_ms = ${sum} exceeds ${MODEL_TIMEOUT_CAP_MS} (the hook timeout), so the cloud step cannot get its configured budget`,
+        ),
       });
     }
   });
@@ -60,7 +64,11 @@ export const ModelConfigSchema = z
   })
   .superRefine((m, ctx) => {
     if (m[m.backend] === undefined) {
-      ctx.addIssue({ code: "custom", path: [m.backend], message: `backend 是 ${m.backend},但缺少 ${m.backend} 字段` });
+      ctx.addIssue({
+        code: "custom",
+        path: [m.backend],
+        message: t(`backend 是 ${m.backend},但缺少 ${m.backend} 字段`, `backend is ${m.backend} but the ${m.backend} field is missing`),
+      });
     }
   });
 export type ModelConfig = z.infer<typeof ModelConfigSchema>;
@@ -86,12 +94,12 @@ export function parseConfig(text: string, path = "config.json"): Config {
   try {
     raw = JSON.parse(text);
   } catch {
-    throw new ConfigError(`${path} 不是合法 JSON(不支持注释)`);
+    throw new ConfigError(t(`${path} 不是合法 JSON(不支持注释)`, `${path} is not valid JSON (comments are not supported)`));
   }
   const parsed = ConfigSchema.safeParse(raw);
   if (!parsed.success) {
-    const lines = parsed.error.issues.map((i) => `  ${i.path.join(".") || "(顶层)"}: ${i.message}`);
-    throw new ConfigError(`${path} 不符合配置 schema:\n${lines.join("\n")}`);
+    const lines = parsed.error.issues.map((i) => `  ${i.path.join(".") || t("(顶层)", "(top level)")}: ${i.message}`);
+    throw new ConfigError(t(`${path} 不符合配置 schema:\n${lines.join("\n")}`, `${path} does not match the config schema:\n${lines.join("\n")}`));
   }
   return parsed.data;
 }
@@ -103,7 +111,7 @@ export function loadConfig(path = configPath()): Config {
     text = readFileSync(path, "utf8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
-    throw new ConfigError(`无法读取 ${path}:${(err as Error).message}`);
+    throw new ConfigError(t(`无法读取 ${path}:${(err as Error).message}`, `cannot read ${path}: ${(err as Error).message}`));
   }
   return parseConfig(text, path);
 }
@@ -113,9 +121,14 @@ export function configWarnings(config: Config): string[] {
   const out: string[] = [];
   const chain = config.model?.backend === "chain" ? config.model.chain : undefined;
   if (chain !== undefined && chain.escalation_threshold <= 0.5) {
+    const x = chain.escalation_threshold;
     out.push(
-      `chain.escalation_threshold = ${chain.escalation_threshold} 不高于 0.5:本地 P(裁决) 在温度 0 下恒 ≥ 0.5,` +
-        `云端升级永远不会触发,行为等同 backend "local"。要升级请设 0.5 以上(默认 0.75)`,
+      t(
+        `chain.escalation_threshold = ${x} 不高于 0.5:本地 P(裁决) 在温度 0 下恒 ≥ 0.5,` +
+          `云端升级永远不会触发,行为等同 backend "local"。要升级请设 0.5 以上(默认 0.75)`,
+        `chain.escalation_threshold = ${x} is not above 0.5: the local P(verdict) is always ≥ 0.5 at temperature 0, ` +
+          `so the cloud is never consulted and this behaves like backend "local". Set it above 0.5 to escalate (default 0.75)`,
+      ),
     );
   }
   return out;

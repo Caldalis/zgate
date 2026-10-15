@@ -18,6 +18,7 @@ import {
   type ModelRequest,
   type ModelVerdict,
 } from "../core/model.ts";
+import { t } from "../i18n.ts";
 import { chatMessages, decisionQuestion, parseExactVerdict, userPrompt, type ChatMessage } from "./prompt.ts";
 
 const GRAMMAR_FREE = 'root ::= ("allow" | "ask")';
@@ -81,7 +82,8 @@ export class LocalBackend implements ModelBackend {
     const free = await this.complete(messages, GRAMMAR_FREE, 10, signal);
     const verdict = parseExactVerdict(free.content);
     if (verdict === null) {
-      throw new ModelFormatError(`本地模型输出不是 allow/ask:${JSON.stringify(free.content).slice(0, 80)}`);
+      const got = JSON.stringify(free.content).slice(0, 80);
+      throw new ModelFormatError(t(`本地模型输出不是 allow/ask:${got}`, `local model output is not allow/ask: ${got}`));
     }
 
     let lp = wordLogprobs(free.first);
@@ -104,7 +106,8 @@ export class LocalBackend implements ModelBackend {
       ?.answers?.verdict;
     const verdict = answer?.choice;
     if (verdict !== "allow" && verdict !== "ask") {
-      throw new ModelFormatError(`决策模型的 choice 不是 allow/ask:${JSON.stringify(verdict ?? null).slice(0, 80)}`);
+      const got = JSON.stringify(verdict ?? null).slice(0, 80);
+      throw new ModelFormatError(t(`决策模型的 choice 不是 allow/ask:${got}`, `decision model choice is not allow/ask: ${got}`));
     }
     const p = answer?.probabilities?.[verdict];
     return { verdict, confidence: typeof p === "number" && p >= 0 && p <= 1 ? p : null };
@@ -148,7 +151,9 @@ export class LocalBackend implements ModelBackend {
       | { message?: { content?: unknown }; logprobs?: { content?: LogprobEntry[] } | null }
       | undefined;
     const content = choice?.message?.content;
-    if (typeof content !== "string") throw new ModelFormatError("llama-server 响应缺 choices[0].message.content");
+    if (typeof content !== "string") {
+      throw new ModelFormatError(t("llama-server 响应缺 choices[0].message.content", "llama-server response lacks choices[0].message.content"));
+    }
     const first = choice?.logprobs?.content?.find((e) => (e.token ?? "").trim() !== "") ?? null;
     return { content, first };
   }
@@ -160,11 +165,11 @@ export class LocalBackend implements ModelBackend {
       signal,
       body: JSON.stringify(payload),
     });
-    if (!res.ok) throw new ModelHttpError(res.status, `llama-server 回 ${res.status}`);
+    if (!res.ok) throw new ModelHttpError(res.status, t(`llama-server 回 ${res.status}`, `llama-server returned ${res.status}`));
     try {
       return await res.json();
     } catch {
-      throw new ModelFormatError("llama-server 回的不是 JSON");
+      throw new ModelFormatError(t("llama-server 回的不是 JSON", "llama-server did not return JSON"));
     }
   }
 }

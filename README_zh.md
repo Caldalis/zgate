@@ -32,6 +32,7 @@
 - 仓库策略:仓库根放一份自然语言的 `.zgatepolicy`,它圈定的范围交给模型按策略判;策略只能收紧
 - 结果信号:判了 `ask` 之后用户是否点了通过,会被对回日志,积累"网关判过头了多少"的数据
 - 接入 Claude Code(http hook)与 opencode(进程内插件)
+- 中英文输出:理由与 CLI 输出跟随 `LANG`,设了 `ZGATE_LANG` 时以它为准
 - 全在本机:只绑 `127.0.0.1`,不上传任何数据;规则路径 p50 不到 0.1ms
 
 ## 快速开始
@@ -177,6 +178,8 @@ scope: prod-db.internal
 | `zgate eval [--cases FILE] [--json]` | 用人工标注的样本评测配置里的模型 |
 
 HTTP 端点:`POST /hook/claude-code`、`POST /hook/opencode`、`POST /decide`(收 `{action}` 返回裁决,供其他适配器)、`POST /outcome`、`GET /healthz`。
+
+理由与 CLI 输出跟随 `LANG`:以 `zh` 开头用中文,否则用英文;`ZGATE_LANG=zh` 或 `ZGATE_LANG=en` 可以强制指定。daemon 启动时定语言,要在 `zgate serve` 之前设;agent 确认框里的理由也是这个语言。
 
 ## 日志与隐私
 

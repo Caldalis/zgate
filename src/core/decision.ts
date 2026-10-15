@@ -10,7 +10,7 @@ export type RuleVerdict = "HARD_DENY" | "SOFT" | "PASS";
 
 export const DecisionSchema = z.object({
   verdict: VerdictSchema,
-  reason: z.string(), // ≤40 字,直接展示给用户。allow 时可为 ""
+  reason: z.string(), // 中文 ≤40 字、英文 ≤80 字符,直接展示给用户。allow 时可为 ""
   source: z.enum(["cache", "rule", "model", "fallback"]),
   rule_id: z.string().nullable(),
   confidence: z.number().nullable(), // 本地模型的 P(裁决);其余为 null,模型失败降级时为 0

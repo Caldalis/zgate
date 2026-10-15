@@ -127,7 +127,8 @@ export const ZgatePlugin = async (input: PluginInput, options?: PluginOptions) =
       await log({ hook: "before", tool: i.tool, callID: i.callID, verdict });
       if (verdict !== "allow" && verdict !== "ask" && verdict !== "deny") return;
       verdicts.set(key(i.sessionID, i.callID), { verdict, at: now });
-      if (verdict === "deny") throw new Error(`zgate 拦截:${str(res?.["reason"]) ?? "网关判定为拒绝"}`);
+      // 前缀不分语言:插件不能 import i18n.ts,reason 已由 daemon 按它的语言给出
+      if (verdict === "deny") throw new Error(`zgate: ${str(res?.["reason"]) ?? "deny"}`);
     },
 
     "tool.execute.after": async (i: AfterInput): Promise<void> => {

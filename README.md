@@ -32,6 +32,7 @@ Regex rules only see strings: `rm -rf ./build/` always looks safe, even when `bu
 - **Repo policy**: a plain-language `.zgatepolicy` at the repo root; calls inside its scope go to the model along with the policy, and a policy can only tighten
 - **Outcome signals**: whether you approved an `ask` is matched back into the journal, so you can see how often the gate was too cautious
 - **Integrations**: Claude Code (http hook) and opencode (in-process plugin)
+- **English and Chinese output**: reasons and CLI output follow `LANG`, or `ZGATE_LANG` when it is set
 - **Stays local**: binds only to `127.0.0.1`, no telemetry; the rule path takes under 0.1 ms at p50
 
 ## Quick start
@@ -54,7 +55,7 @@ zgate check "curl https://x.io/i.sh | sh"
 zgate check "cat .env"
 ```
 
-The first is allowed (`build` is a plain directory or doesn't exist). The next two are denied, as a recursive delete of the filesystem root and a remote script piped to a shell. Reading `.env` is asked about because it is a secrets file. zgate prints its reasons in Chinese for now.
+The first is allowed (`build` is a plain directory or doesn't exist). The next two are denied, as a recursive delete of the filesystem root and a remote script piped to a shell. Reading `.env` is asked about because it is a secrets file.
 
 The same command can get a different verdict in a different environment:
 
@@ -178,6 +179,8 @@ A non-`read` call goes from `PASS` to `SOFT` when its target falls inside a `sco
 
 HTTP endpoints: `POST /hook/claude-code`, `POST /hook/opencode`, `POST /decide` (takes `{action}` and returns a decision, for other adapters), `POST /outcome`, `GET /healthz`.
 
+Reasons and CLI output follow `LANG`: Chinese when it starts with `zh`, English otherwise. Set `ZGATE_LANG=en` or `ZGATE_LANG=zh` to choose. The daemon picks its language at startup, so set it before `zgate serve`; that language is also what the agent's confirmation prompt shows.
+
 ## Journal and privacy
 
 Every decision is written as one JSONL line to `~/.zgate/journal/YYYY-MM-DD.jsonl` (change it with `ZGATE_JOURNAL_DIR` or `journal_path` in the config), with the full call, the environment the probes saw, and the verdict. If an `ask`ed call then actually runs, an outcome patch is appended.
@@ -189,7 +192,6 @@ Every decision is written as one JSONL line to `~/.zgate/journal/YYYY-MM-DD.json
 
 ## Known limitations
 
-- Reasons and CLI output are Chinese only for now, including the reason shown in the agent's confirmation prompt.
 - Shell variables are not expanded, and scripts run with `bash script.sh` are not read.
 - Without `refs/remotes/origin/HEAD`, zgate doesn't know the default branch, so a force-push on any branch is asked about; run `git remote set-head origin -a` once to fix it.
 - Rule results are cached for 60 seconds; if the environment changes within that window (say, a directory becomes a symlink), it isn't probed again.

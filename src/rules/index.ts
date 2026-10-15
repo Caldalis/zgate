@@ -30,7 +30,7 @@ export interface Rule {
    * 目前只有 policy.self_write —— 策略文本按设计不给模型看,模型对这条没有依据。
    */
   readonly skipModel?: true;
-  /** 命中返回 reason 字符串(≤40 字),不命中返回 null */
+  /** 命中返回 reason 字符串(中文 ≤40 字、英文 ≤80 字符,用 t() 写两种),不命中返回 null */
   match(action: Action, ctx: Context | null): string | null;
 }
 

@@ -4,6 +4,7 @@
 // 这里全是 pre 轮 SOFT 文本规则:让这类调用到达模型。判据刻意粗,多问一次的代价远低于放过一次 terraform destroy。
 
 import type { Action } from "../core/action.ts";
+import { t } from "../i18n.ts";
 import { commandSegments, pipelineStages, simpleCommandHead, simpleCommands, type SimpleCommand } from "./cmdline.ts";
 import { defineRule, type Rule } from "./index.ts";
 
@@ -44,9 +45,12 @@ const dbDestructive = defineRule({
     for (const c of commandsOf(action)) {
       if (DB_CLIS.has(c.head)) {
         const m = SQL_DESTRUCTIVE.exec(c.argText);
-        if (m !== null) return `数据库破坏性语句 ${clip(m[0].replace(/[.(]/g, "").split(/\s+/)[0] ?? "")}`;
+        if (m !== null) {
+          const stmt = clip(m[0].replace(/[.(]/g, "").split(/\s+/)[0] ?? "");
+          return t(`数据库破坏性语句 ${stmt}`, `destructive database statement ${stmt}`);
+        }
       }
-      if (DB_RESET.test(c.text)) return "重置数据库";
+      if (DB_RESET.test(c.text)) return t("重置数据库", "database reset");
     }
     return null;
   },
@@ -80,7 +84,9 @@ const infraDestructive = defineRule({
   match(action: Action): string | null {
     for (const c of commandsOf(action)) {
       for (const r of INFRA) {
-        if (r.head.test(c.head) && r.args.test(c.argText)) return `基础设施破坏性操作(${c.head})`;
+        if (r.head.test(c.head) && r.args.test(c.argText)) {
+          return t(`基础设施破坏性操作(${c.head})`, `destructive infrastructure operation (${c.head})`);
+        }
       }
     }
     return null;
@@ -112,7 +118,7 @@ const publishDeploy = defineRule({
   match(action: Action): string | null {
     for (const c of commandsOf(action)) {
       for (const r of PUBLISH) {
-        if (r.head.test(c.head) && r.args.test(c.argText)) return `发布或部署到外部(${c.head})`;
+        if (r.head.test(c.head) && r.args.test(c.argText)) return t(`发布或部署到外部(${c.head})`, `publish or deploy (${c.head})`);
       }
     }
     return null;
@@ -132,8 +138,10 @@ const remoteDestructive = defineRule({
   verdict: "SOFT",
   match(action: Action): string | null {
     for (const c of commandsOf(action)) {
-      if (c.head === "ssh" && REMOTE_DESTRUCTIVE.test(c.argText)) return "远程执行破坏性命令";
-      if (c.head === "rsync" && /(^|\s)--delete/.test(c.argText)) return "rsync --delete 会删目的地文件";
+      if (c.head === "ssh" && REMOTE_DESTRUCTIVE.test(c.argText)) return t("远程执行破坏性命令", "destructive command over ssh");
+      if (c.head === "rsync" && /(^|\s)--delete/.test(c.argText)) {
+        return t("rsync --delete 会删目的地文件", "rsync --delete removes files at the destination");
+      }
     }
     return null;
   },
@@ -155,7 +163,7 @@ const secretTransfer = defineRule({
         (c.head === "az" && /^storage blob upload/.test(c.argText));
       if (!transfers) continue;
       for (const a of c.args) {
-        if (!a.startsWith("-") && SECRET_LIKE.test(a.toLowerCase())) return `传输密钥类文件 ${clip(a)}`;
+        if (!a.startsWith("-") && SECRET_LIKE.test(a.toLowerCase())) return t(`传输密钥类文件 ${clip(a)}`, `transfers a secrets file ${clip(a)}`);
       }
     }
     return null;
@@ -166,19 +174,19 @@ const secretTransfer = defineRule({
 // 系统级
 // ---------------------------------------------------------------------------
 
-const SYSTEM: readonly { readonly head: RegExp; readonly args: RegExp | null; readonly what: string }[] = [
-  { head: /^crontab$/, args: /(^|\s)-r(\s|$)/, what: "crontab -r" },
-  { head: /^kill$/, args: /(^|\s)-1(\s|$)/, what: "kill -1" },
-  { head: /^(shutdown|reboot|halt|poweroff)$/, args: null, what: "关机重启" },
-  { head: /^init$/, args: /^[06](\s|$)/, what: "init 0/6" },
-  { head: /^launchctl$/, args: /^(bootout|unload|remove)(\s|$)/, what: "launchctl 卸载服务" },
-  { head: /^diskutil$/, args: /^(erase|partition|apfs delete|reformat|secureerase)/, what: "diskutil 抹盘" },
-  { head: /^csrutil$/, args: /^disable(\s|$)/, what: "关闭 SIP" },
-  { head: /^nvram$/, args: /(^|\s)-c(\s|$)/, what: "清 NVRAM" },
-  { head: /^(userdel|groupdel|deluser)$/, args: null, what: "删用户" },
-  { head: /^dscl$/, args: /(^|\s)-delete(\s|$)/, what: "删目录服务记录" },
-  { head: /^(iptables|nft)$/, args: /(^|\s)(-f|flush)(\s|$)/, what: "清空防火墙规则" },
-  { head: /^ufw$/, args: /^disable(\s|$)/, what: "关闭防火墙" },
+const SYSTEM: readonly { readonly head: RegExp; readonly args: RegExp | null; readonly zh: string; readonly en: string }[] = [
+  { head: /^crontab$/, args: /(^|\s)-r(\s|$)/, zh: "crontab -r", en: "crontab -r" },
+  { head: /^kill$/, args: /(^|\s)-1(\s|$)/, zh: "kill -1", en: "kill -1" },
+  { head: /^(shutdown|reboot|halt|poweroff)$/, args: null, zh: "关机重启", en: "shutdown or reboot" },
+  { head: /^init$/, args: /^[06](\s|$)/, zh: "init 0/6", en: "init 0/6" },
+  { head: /^launchctl$/, args: /^(bootout|unload|remove)(\s|$)/, zh: "launchctl 卸载服务", en: "launchctl unloads a service" },
+  { head: /^diskutil$/, args: /^(erase|partition|apfs delete|reformat|secureerase)/, zh: "diskutil 抹盘", en: "diskutil erases a disk" },
+  { head: /^csrutil$/, args: /^disable(\s|$)/, zh: "关闭 SIP", en: "disables SIP" },
+  { head: /^nvram$/, args: /(^|\s)-c(\s|$)/, zh: "清 NVRAM", en: "clears NVRAM" },
+  { head: /^(userdel|groupdel|deluser)$/, args: null, zh: "删用户", en: "deletes a user" },
+  { head: /^dscl$/, args: /(^|\s)-delete(\s|$)/, zh: "删目录服务记录", en: "deletes a directory service record" },
+  { head: /^(iptables|nft)$/, args: /(^|\s)(-f|flush)(\s|$)/, zh: "清空防火墙规则", en: "flushes firewall rules" },
+  { head: /^ufw$/, args: /^disable(\s|$)/, zh: "关闭防火墙", en: "disables the firewall" },
 ];
 
 const systemDestructive = defineRule({
@@ -188,7 +196,9 @@ const systemDestructive = defineRule({
   match(action: Action): string | null {
     for (const c of commandsOf(action)) {
       for (const r of SYSTEM) {
-        if (r.head.test(c.head) && (r.args === null || r.args.test(c.argText))) return `系统级破坏性操作(${r.what})`;
+        if (r.head.test(c.head) && (r.args === null || r.args.test(c.argText))) {
+          return t(`系统级破坏性操作(${r.zh})`, `destructive system operation (${r.en})`);
+        }
       }
     }
     return null;
@@ -211,16 +221,20 @@ const envDump = defineRule({
     // 只有管道最后一级的输出会回到 agent 的上下文:`env | grep PATH` 不算整份导出
     for (const seg of commandSegments(action)) {
       const last = pipelineStages(seg).at(-1) ?? "";
-      if (DUMP_ALL.has(last.trim().toLowerCase())) return "导出全部环境变量";
+      if (DUMP_ALL.has(last.trim().toLowerCase())) return t("导出全部环境变量", "dumps all environment variables");
     }
     for (const seg of simpleCommands(action)) {
       const c = simpleCommandHead(seg);
       if (c === null) continue;
-      if (c.head === "cat" && c.args.some((a) => /\/proc\/[^/]+\/environ$/.test(a))) return "读取进程环境变量";
+      if (c.head === "cat" && c.args.some((a) => /\/proc\/[^/]+\/environ$/.test(a))) {
+        return t("读取进程环境变量", "reads a process's environment");
+      }
       if (c.head === "printenv" || c.head === "echo" || c.head === "printf") {
         for (const a of c.args) {
           const name = c.head === "printenv" ? a : /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(a)?.[1];
-          if (name !== undefined && name !== "" && !name.startsWith("-") && SECRET_VAR.test(name)) return `读取环境变量里的凭据 ${clip(name, 20)}`;
+          if (name !== undefined && name !== "" && !name.startsWith("-") && SECRET_VAR.test(name)) {
+            return t(`读取环境变量里的凭据 ${clip(name, 20)}`, `reads a credential from env var ${clip(name, 20)}`);
+          }
         }
       }
     }

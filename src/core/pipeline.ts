@@ -24,6 +24,7 @@ import {
 } from "./model.ts";
 import { enrich } from "../enrichers/index.ts";
 import { gitFacts } from "../enrichers/git.ts";
+import { t } from "../i18n.ts";
 import { loadPolicy, policyDetails, type Policy, type PolicyDetails } from "../policy.ts";
 import { evaluate, skipsModel, type RuleHit, type RuleVerdict } from "../rules/index.ts";
 import { scopeHits } from "../rules/policy.ts";
@@ -183,8 +184,9 @@ function assemble(stage: RuleStage, outcome: ModelOutcome, modelMs: number, newI
 
   if (hit.verdict === "SOFT" && outcome.kind === "failed") {
     // 模型超时或不可达,降级到 ask。理由仍是规则的那句,括号里补一句降级原因。
+    const reason = t(`${hit.reason}(${outcome.cause})`, `${hit.reason} (${outcome.cause})`);
     return {
-      decision: { ...base, verdict: "ask", reason: `${hit.reason}(${outcome.cause})`, source: "fallback", confidence: 0 },
+      decision: { ...base, verdict: "ask", reason, source: "fallback", confidence: 0 },
       context: stage.context,
       ruleVerdict: hit.verdict,
       modelDetails: outcome.details,
@@ -225,13 +227,14 @@ export function decideAction(action: Action, opts: PipelineOptions = {}): Decisi
 
 /** 模型失败的降级原因:给 reason 一句话、给 journal 一个码。 */
 function failureOf(err: unknown): { cause: string; details: Omit<ModelDetails, "backend"> } {
-  if (isAbortError(err)) return { cause: "模型超时", details: { error: "timeout" } };
-  if (err instanceof ModelFormatError) return { cause: "模型输出异常", details: { error: "format" } };
+  if (isAbortError(err)) return { cause: t("模型超时", "model timed out"), details: { error: "timeout" } };
+  if (err instanceof ModelFormatError) return { cause: t("模型输出异常", "malformed model output"), details: { error: "format" } };
   if (err instanceof ModelHttpError && err.status < 500) {
-    return { cause: "模型拒绝请求", details: { error: "rejected", http_status: err.status } };
+    return { cause: t("模型拒绝请求", "model rejected the request"), details: { error: "rejected", http_status: err.status } };
   }
-  if (err instanceof ModelHttpError) return { cause: "模型不可达", details: { error: "unreachable", http_status: err.status } };
-  return { cause: "模型不可达", details: { error: "unreachable" } };
+  const unreachable = t("模型不可达", "model unreachable");
+  if (err instanceof ModelHttpError) return { cause: unreachable, details: { error: "unreachable", http_status: err.status } };
+  return { cause: unreachable, details: { error: "unreachable" } };
 }
 
 /**

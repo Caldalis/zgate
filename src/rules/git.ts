@@ -11,6 +11,7 @@
 
 import type { Action } from "../core/action.ts";
 import type { Context } from "../core/context.ts";
+import { t } from "../i18n.ts";
 import { defineRule } from "./index.ts";
 import type { Rule } from "./index.ts";
 import { hasWord, normalize } from "./match.ts";
@@ -141,9 +142,10 @@ const forcePushDefaultBranch = defineRule({
       // 没写位置参数 ⇒ 推当前分支(= 默认分支)⇒ 判死。
       // 写了就只在目的端确实是当前分支时判死。
       const dests = pushDestinations(g.rest);
-      if (dests.length === 0) return `在默认分支 ${branch} 上强推`;
+      const reason = t(`在默认分支 ${branch} 上强推`, `force push on the default branch ${branch}`);
+      if (dests.length === 0) return reason;
       for (const d of dests) {
-        if (d === branch || d === "HEAD") return `在默认分支 ${branch} 上强推`;
+        if (d === branch || d === "HEAD") return reason;
       }
     }
     return null;
@@ -167,7 +169,7 @@ const forcePushIntoDefault = defineRule({
     for (const g of gitInvocations(action)) {
       if (g.sub !== "push" || !isForcePush(g.rest)) continue;
       for (const dst of pushDestinations(g.rest)) {
-        if (dst === def) return `强推覆盖远端默认分支 ${def}`;
+        if (dst === def) return t(`强推覆盖远端默认分支 ${def}`, `force push overwrites the remote default branch ${def}`);
       }
     }
     return null;
@@ -191,7 +193,9 @@ const forcePushUnknown = defineRule({
     if (branchKnown && defaultKnown) return null; // 判据齐了,交给上面两条
     for (const g of gitInvocations(action)) {
       if (g.sub !== "push" || !isForcePush(g.rest)) continue;
-      return branchKnown ? "强制推送,默认分支未知" : "强制推送,分支未知";
+      return branchKnown
+        ? t("强制推送,默认分支未知", "force push, default branch unknown")
+        : t("强制推送,分支未知", "force push, branch unknown");
     }
     return null;
   },
@@ -208,38 +212,38 @@ const destructiveGit = defineRule({
   match(action: Action): string | null {
     for (const g of gitInvocations(action)) {
       if (g.sub === "reset" && /(^|\s)--hard(\s|$)/.test(g.rest)) {
-        return "丢弃工作区改动";
+        return t("丢弃工作区改动", "discards working tree changes");
       }
       if (g.sub === "clean" && /(^|\s)-[a-z]*f/.test(g.rest)) {
-        return "删除未跟踪文件";
+        return t("删除未跟踪文件", "deletes untracked files");
       }
       if (g.sub === "checkout" && /(^|\s)--(\s|$)/.test(g.text)) {
-        return "丢弃工作区改动";
+        return t("丢弃工作区改动", "discards working tree changes");
       }
       if (g.sub === "restore" && /(^|\s)--(source|worktree|staged)(\s|$)/.test(g.rest)) {
-        return "丢弃工作区改动";
+        return t("丢弃工作区改动", "discards working tree changes");
       }
       if (g.sub === "filter-branch" || g.sub === "filter-repo") {
-        return "重写仓库历史";
+        return t("重写仓库历史", "rewrites repository history");
       }
       if (g.sub === "push" && /(^|\s)--(delete|mirror)(\s|$)/.test(g.rest)) {
-        return "删除远程分支或镜像推送";
+        return t("删除远程分支或镜像推送", "deletes a remote branch or mirror-pushes");
       }
       if (g.sub === "branch" && /(^|\s)-D(\s|$)/.test(g.rest)) {
-        return "强制删除本地分支";
+        return t("强制删除本地分支", "force-deletes a local branch");
       }
       // stash 里的改动、reflog 与不可达对象、引用,丢了都找不回来
       if (g.sub === "stash" && /(^|\s)(drop|clear)(\s|$)/.test(g.rest)) {
-        return "丢弃 stash 里的改动";
+        return t("丢弃 stash 里的改动", "drops stashed changes");
       }
       if (g.sub === "reflog" && /(^|\s)(expire|delete)(\s|$)/.test(g.rest)) {
-        return "清理 reflog";
+        return t("清理 reflog", "prunes the reflog");
       }
       if (g.sub === "gc" && /(^|\s)--prune(=|\s|$)/.test(g.rest)) {
-        return "gc --prune 清理不可达对象";
+        return t("gc --prune 清理不可达对象", "gc --prune removes unreachable objects");
       }
       if (g.sub === "update-ref" && /(^|\s)-d(\s|$)/.test(g.rest)) {
-        return "删除 git 引用";
+        return t("删除 git 引用", "deletes a git ref");
       }
     }
     return null;
@@ -262,7 +266,7 @@ const skipHooks = defineRule({
       // 也允许 `commit --no-verify` 这种在 wrapper 里的写法,但要有 git 字样
       if (!text.includes("git")) return null;
     }
-    if (/(^|\s)--no-verify(\s|$)/.test(text)) return "跳过 git 钩子检查";
+    if (/(^|\s)--no-verify(\s|$)/.test(text)) return t("跳过 git 钩子检查", "skips git hooks (--no-verify)");
     return null;
   },
 });

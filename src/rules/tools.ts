@@ -3,6 +3,7 @@
 // 不跳过它们:hook 回 allow 会跳过 Claude Code 自己的确认框,那是 fail-open。
 
 import type { Action } from "../core/action.ts";
+import { t } from "../i18n.ts";
 import { defineRule, type Rule } from "./index.ts";
 
 const mcpTool = defineRule({
@@ -12,8 +13,9 @@ const mcpTool = defineRule({
   match(action: Action): string | null {
     const m = /^mcp__(.+?)__/.exec(action.tool_name);
     if (m === null) return null;
-    const server = m[1] ?? "";
-    return `MCP 工具(${server.length > 24 ? `${server.slice(0, 23)}…` : server})`;
+    const raw = m[1] ?? "";
+    const server = raw.length > 24 ? `${raw.slice(0, 23)}…` : raw;
+    return t(`MCP 工具(${server})`, `MCP tool (${server})`);
   },
 });
 

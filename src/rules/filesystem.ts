@@ -5,6 +5,7 @@
 
 import type { Action } from "../core/action.ts";
 import type { Context } from "../core/context.ts";
+import { t } from "../i18n.ts";
 import { defineRule } from "./index.ts";
 import type { Rule } from "./index.ts";
 import { baseName, hasSegment, normalize, redirectDestinations, underHome } from "./match.ts";
@@ -38,15 +39,17 @@ const recursiveDeleteToRoot = defineRule({
   verdict: "HARD_DENY",
   match(action: Action): string | null {
     if (action.verb !== "delete") return null;
-    for (const t of action.targets) {
-      if (!isRoot(t.raw) && !isHome(t.raw)) continue;
+    for (const target of action.targets) {
+      if (!isRoot(target.raw) && !isHome(target.raw)) continue;
       // 拿不到原文时 looksRecursive 为 false,照样命中,只是 reason 不说"递归"
       const cmd = normalize(commandLine(action)).toLowerCase();
       const looksRecursive = /(^|\s)-[a-z]*r|--recursive|--no-preserve-root/.test(cmd);
       if (looksRecursive) {
-        return isRoot(t.raw) ? "递归删除文件系统根目录" : "递归删除家目录";
+        return isRoot(target.raw)
+          ? t("递归删除文件系统根目录", "recursive delete of the filesystem root")
+          : t("递归删除家目录", "recursive delete of the home directory");
       }
-      return "删除根目录或家目录";
+      return t("删除根目录或家目录", "deletes the root or home directory");
     }
     return null;
   },
@@ -77,13 +80,13 @@ const forkBombPattern = defineRule({
       const body = m[2] ?? "";
       if (name !== "" && body.includes(name)) {
         // 再有管道或后台即算
-        if (/[|&]/.test(body)) return "fork bomb 模式";
+        if (/[|&]/.test(body)) return t("fork bomb 模式", "fork bomb pattern");
       }
     }
 
     // 更短的写法:直接递归调用自己,不看函数体
     if (/:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?\s*:/.test(text)) {
-      return "fork bomb 模式";
+      return t("fork bomb 模式", "fork bomb pattern");
     }
     return null;
   },
@@ -94,20 +97,24 @@ const forkBombPattern = defineRule({
  * 写几乎总是恶意或灾难性的(覆盖 SSH 授权公钥 = 直接拿走机器)。
  */
 const SENSITIVE_WRITE_DIRS = [
-  { seg: ".ssh", what: "SSH 目录" },
-  { seg: ".aws", what: "AWS 凭据目录" },
-  { seg: ".gnupg", what: "GnuPG 目录" },
-  { seg: ".kube", what: "Kubernetes 配置目录" },
+  { seg: ".ssh", zh: "SSH 目录", en: "the SSH directory" },
+  { seg: ".aws", zh: "AWS 凭据目录", en: "AWS credentials" },
+  { seg: ".gnupg", zh: "GnuPG 目录", en: "the GnuPG directory" },
+  { seg: ".kube", zh: "Kubernetes 配置目录", en: "Kubernetes config" },
 ] as const;
 
 /** 相对家目录的敏感路径;以及绝对路径里要按段匹配的目录。 */
 const SENSITIVE_WRITE_SUBPATHS = [
-  { sub: ".config/gcloud", what: "gcloud 配置目录" },
-  { sub: ".config/gh", what: "GitHub CLI 凭据" },
-  { sub: ".docker/config.json", what: "Docker 凭据" },
-  { sub: ".netrc", what: "netrc 凭据" },
-  { sub: ".git-credentials", what: "git 凭据" },
+  { sub: ".config/gcloud", zh: "gcloud 配置目录", en: "gcloud config" },
+  { sub: ".config/gh", zh: "GitHub CLI 凭据", en: "GitHub CLI credentials" },
+  { sub: ".docker/config.json", zh: "Docker 凭据", en: "Docker credentials" },
+  { sub: ".netrc", zh: "netrc 凭据", en: "netrc credentials" },
+  { sub: ".git-credentials", zh: "git 凭据", en: "git credentials" },
 ] as const;
+
+function writesTo(what: { readonly zh: string; readonly en: string }): string {
+  return t(`写入 ${what.zh}`, `writes to ${what.en}`);
+}
 
 const credentialWrite = defineRule({
   id: "fs.credential_write",
@@ -130,22 +137,22 @@ const credentialWrite = defineRule({
       if (homeRel !== null) {
         for (const d of SENSITIVE_WRITE_DIRS) {
           if (homeRel === d.seg || homeRel.startsWith(d.seg + "/")) {
-            return `写入 ${d.what}`;
+            return writesTo(d);
           }
         }
         for (const s of SENSITIVE_WRITE_SUBPATHS) {
           if (homeRel === s.sub || homeRel.startsWith(s.sub + "/")) {
-            return `写入 ${s.what}`;
+            return writesTo(s);
           }
         }
       }
 
       // 绝对路径(`/root/.ssh/...`、容器里的 `/home/x/.ssh/...`)按段认
       for (const d of SENSITIVE_WRITE_DIRS) {
-        if (hasSegment(p, d.seg)) return `写入 ${d.what}`;
+        if (hasSegment(p, d.seg)) return writesTo(d);
       }
       for (const s of SENSITIVE_WRITE_SUBPATHS) {
-        if (p.includes(s.sub)) return `写入 ${s.what}`;
+        if (p.includes(s.sub)) return writesTo(s);
       }
     }
     return null;
@@ -161,7 +168,7 @@ const noPreserveRoot = defineRule({
     const cmd = commandLine(action);
     if (cmd === "") return null;
     return normalize(cmd).toLowerCase().includes("--no-preserve-root")
-      ? "显式要求删除根目录"
+      ? t("显式要求删除根目录", "explicitly asks to delete the root (--no-preserve-root)")
       : null;
   },
 });
@@ -185,7 +192,7 @@ const deviceDestroy = defineRule({
     if (!device.test(text)) return null;
     // 单纯的 `ls /dev/sda` 不能算 —— 只有写类命令才算
     if (/\bdd\b|\bmkfs|\bfdisk|\bparted|\bwipefs|\bshred\b|\bblkdiscard\b/.test(text)) {
-      return "写入磁盘设备节点";
+      return t("写入磁盘设备节点", "writes to a disk device node");
     }
     return null;
   },
@@ -204,7 +211,7 @@ const unresolvedTarget = defineRule({
     const candidates = action.verb === "write" || action.verb === "delete" ? action.targets.map((t) => t.raw) : [];
     for (const seg of commandSegments(action)) candidates.push(...redirectDestinations(seg));
     for (const raw of candidates) {
-      if (raw.includes("$") || raw.startsWith("~")) return "目标含未展开的变量或 ~";
+      if (raw.includes("$") || raw.startsWith("~")) return t("目标含未展开的变量或 ~", "target contains an unexpanded variable or ~");
     }
     return null;
   },
@@ -220,7 +227,9 @@ const rmOperandHidden = defineRule({
   match(action: Action): string | null {
     for (const seg of simpleCommands(action)) {
       const c = simpleCommandHead(seg);
-      if (c !== null && RM_FAMILY.has(c.head) && operandsOf(c.args).length === 0) return "删除目标不在命令行上";
+      if (c !== null && RM_FAMILY.has(c.head) && operandsOf(c.args).length === 0) {
+        return t("删除目标不在命令行上", "delete targets are not on the command line");
+      }
     }
     return null;
   },
@@ -266,7 +275,9 @@ const escapesCwd = defineRule({
       // 不存在的普通路径带预期落点(fs.ts 的 projectPath),resolved 非 null。
       if (f.resolved === null) continue;
       // inside_cwd 为 false 且 resolved 存在 —— 真实或预期落点已经在 cwd 之外了
-      return f.is_symlink ? "目标软链接指向 cwd 之外" : "目标在 cwd 之外";
+      return f.is_symlink
+        ? t("目标软链接指向 cwd 之外", "target is a symlink pointing outside cwd")
+        : t("目标在 cwd 之外", "target is outside cwd");
     }
     return null;
   },
@@ -285,7 +296,7 @@ const symlinkOutOfRepo = defineRule({
     if (ctx === null || !ctx.repo.is_repo) return null;
     for (const f of ctx.resources) {
       if (!f.is_symlink || f.resolved === null) continue;
-      if (!f.inside_repo) return "写目标是指向仓库外的软链接";
+      if (!f.inside_repo) return t("写目标是指向仓库外的软链接", "write target is a symlink pointing outside the repo");
     }
     return null;
   },
@@ -314,7 +325,7 @@ const secretFile = defineRule({
       if (SECRET_NAME_RE.test(p)) {
         // `.env.example` 是给人看的模板,里面没有真值 —— 放行。
         if (/\.env\.(example|sample|template|dist)$/.test(p)) continue;
-        return `涉及密钥文件 ${baseName(raw)}`;
+        return t(`涉及密钥文件 ${baseName(raw)}`, `secrets file ${baseName(raw)}`);
       }
     }
     return null;
@@ -330,7 +341,7 @@ const unknownAction = defineRule({
   stage: "post",
   verdict: "SOFT",
   match(action: Action): string | null {
-    return action.verb === "unknown" ? "命令语义无法判定" : null;
+    return action.verb === "unknown" ? t("命令语义无法判定", "cannot tell what the command does") : null;
   },
 });
 
@@ -355,7 +366,7 @@ const productionWord = defineRule({
     for (const w of PROD_WORDS) {
       // 词边界匹配:reproduce / productive 不算
       const re = new RegExp(`(^|[^a-z0-9_])${w}([^a-z0-9_]|$)`);
-      if (re.test(haystack)) return `操作涉及生产环境(${w})`;
+      if (re.test(haystack)) return t(`操作涉及生产环境(${w})`, `touches production (${w})`);
     }
     return null;
   },
@@ -372,8 +383,10 @@ const absoluteWriteOutside = defineRule({
   match(action: Action, ctx: Context | null): string | null {
     if (action.verb !== "write" && action.verb !== "delete") return null;
     if (ctx === null || ctx.repo.is_repo) return null; // 仓库内的情况交给上面几条
-    for (const t of action.targets) {
-      if (t.raw.startsWith("/") && !t.raw.startsWith("//")) return "写入仓库外的绝对路径";
+    for (const target of action.targets) {
+      if (target.raw.startsWith("/") && !target.raw.startsWith("//")) {
+        return t("写入仓库外的绝对路径", "writes to an absolute path outside the repo");
+      }
     }
     return null;
   },
@@ -394,11 +407,11 @@ const readOnlyFiles = defineRule({
   match(action: Action, ctx: Context | null): string | null {
     if (action.verb !== "read") return null;
     // 有目标时,目标都在 cwd 内(或不存在)才算白名单
-    if (action.targets.length === 0) return "纯查询命令";
+    if (action.targets.length === 0) return t("纯查询命令", "read-only query");
     if (ctx === null) return null;
     const files = ctx.resources;
-    if (files.length === 0) return "纯查询命令";
-    if (files.every((f) => f.inside_cwd || !f.exists)) return "读取仓库内文件";
+    if (files.length === 0) return t("纯查询命令", "read-only query");
+    if (files.every((f) => f.inside_cwd || !f.exists)) return t("读取仓库内文件", "reads files inside the repo");
     return null;
   },
 });
@@ -412,7 +425,7 @@ const trivialQuery = defineRule({
   verdict: "PASS",
   match(action: Action, _ctx: Context | null): string | null {
     const cmd = normalize(commandLine(action)).toLowerCase().trim();
-    return cmd !== "" && TRIVIAL_QUERY_CMDS.has(cmd) ? "无副作用的查询命令" : null;
+    return cmd !== "" && TRIVIAL_QUERY_CMDS.has(cmd) ? t("无副作用的查询命令", "query with no side effects") : null;
   },
 });
 

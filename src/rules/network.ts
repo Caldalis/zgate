@@ -5,6 +5,7 @@
 
 import type { Action } from "../core/action.ts";
 import type { Context } from "../core/context.ts";
+import { t } from "../i18n.ts";
 import { defineRule } from "./index.ts";
 import type { Rule } from "./index.ts";
 import { baseName, normalize } from "./match.ts";
@@ -64,7 +65,7 @@ const pipeToShell = defineRule({
   match(action: Action): string | null {
     // 逐段判:`&&` / `;` 切开、`sh -c '…'` 展开,段内管道保持完整。
     for (const pipeline of commandSegments(action)) {
-      if (pipelineToShell(pipeline)) return "管道执行远程脚本";
+      if (pipelineToShell(pipeline)) return t("管道执行远程脚本", "remote script piped to a shell");
     }
     return null;
   },
@@ -88,7 +89,7 @@ const fetchThenExec = defineRule({
     const hasFetch = words.some((w) => FETCHERS.has(baseName(w)));
     if (!hasFetch) return null;
     const execs = words.some((w) => SHELL_INTERPRETERS.has(baseName(w)));
-    return execs ? "下载后执行远程脚本" : null;
+    return execs ? t("下载后执行远程脚本", "downloads then runs a remote script") : null;
   },
 });
 
@@ -100,11 +101,11 @@ const writeToSystemPath = defineRule({
   match(action: Action): string | null {
     if (action.verb !== "write") return null;
     const SYSTEM_PREFIXES = ["/etc/", "/usr/", "/bin/", "/sbin/", "/boot/", "/dev/", "/sys/", "/proc/", "/var/"];
-    for (const t of action.targets) {
-      const p = t.raw;
+    for (const target of action.targets) {
+      const p = target.raw;
       if (!p.startsWith("/")) continue;
       for (const pre of SYSTEM_PREFIXES) {
-        if (p.startsWith(pre)) return "写入系统目录";
+        if (p.startsWith(pre)) return t("写入系统目录", "writes to a system directory");
       }
     }
     return null;
@@ -128,7 +129,7 @@ const networkExfil = defineRule({
     const mentionsSecret = /\.env|\bid_rsa|credential|\.pem|\bsecret|token|password|passwd/.test(text);
     if (!mentionsSecret) return null;
     const isUpload = /(-d|--data|-t|--upload-file|-f\s|--form)\b/.test(text);
-    return isUpload ? "上传密钥文件到外部" : null;
+    return isUpload ? t("上传密钥文件到外部", "uploads secrets to an external host") : null;
   },
 });
 

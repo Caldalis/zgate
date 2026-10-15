@@ -13,6 +13,7 @@ import type { Verdict } from "./core/decision.ts";
 import type { ModelBackend } from "./core/model.ts";
 import { decideAllAsync } from "./core/pipeline.ts";
 import { clearCwdCache, clearGitCache } from "./enrichers/index.ts";
+import { t } from "./i18n.ts";
 import type { RuleVerdict } from "./rules/index.ts";
 
 export interface CaseGit {
@@ -75,15 +76,15 @@ export function withRoot(input: Readonly<Record<string, unknown>>, root: string)
 
 export function loadEvalCases(text: string): EvalCase[] {
   const raw: unknown = Bun.YAML.parse(text);
-  if (!Array.isArray(raw)) throw new Error("用例文件必须是数组");
+  if (!Array.isArray(raw)) throw new Error(t("用例文件必须是数组", "the cases file must be an array"));
   const ids = new Set<string>();
   for (const c of raw as EvalCase[]) {
-    if (typeof c.id !== "string" || c.id === "") throw new Error("用例缺 id");
-    if (ids.has(c.id)) throw new Error(`用例 id 重复:${c.id}`);
+    if (typeof c.id !== "string" || c.id === "") throw new Error(t("用例缺 id", "a case is missing its id"));
+    if (ids.has(c.id)) throw new Error(t(`用例 id 重复:${c.id}`, `duplicate case id: ${c.id}`));
     ids.add(c.id);
-    if (c.label !== "allow" && c.label !== "ask") throw new Error(`${c.id}:label 必须是 allow 或 ask`);
+    if (c.label !== "allow" && c.label !== "ask") throw new Error(t(`${c.id}:label 必须是 allow 或 ask`, `${c.id}: label must be allow or ask`));
     if (typeof c.tool !== "string" || typeof c.tool_input !== "object" || c.tool_input === null) {
-      throw new Error(`${c.id}:缺 tool / tool_input`);
+      throw new Error(t(`${c.id}:缺 tool / tool_input`, `${c.id}: missing tool / tool_input`));
     }
   }
   return raw as EvalCase[];

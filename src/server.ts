@@ -14,6 +14,7 @@
 
 import { ActionSchema, type Action } from "./core/action.ts";
 import type { Decision } from "./core/decision.ts";
+import { t } from "./i18n.ts";
 import { OutcomeSchema, record, recordOutcome, startJournal, shutdownJournal, journalStats, type Outcome } from "./core/journal.ts";
 import type { ModelBackend } from "./core/model.ts";
 import { decideAllAsync, type PipelineOptions } from "./core/pipeline.ts";
@@ -86,17 +87,17 @@ async function handleDecide(req: Request, opts: PipelineOptions): Promise<Respon
   try {
     raw = await req.json();
   } catch {
-    return json({ error: "body 不是合法 JSON" }, 400);
+    return json({ error: t("body 不是合法 JSON", "body is not valid JSON") }, 400);
   }
 
   if (typeof raw !== "object" || raw === null) {
-    return json({ error: "body 必须是对象" }, 400);
+    return json({ error: t("body 必须是对象", "body must be an object") }, 400);
   }
   const actionRaw = (raw as Record<string, unknown>)["action"];
   // 只在边界 parse 一次,这里就是边界。
   const parsed = ActionSchema.safeParse(actionRaw);
   if (!parsed.success) {
-    return json({ error: "action 不符合 schema", issues: parsed.error.issues }, 400);
+    return json({ error: t("action 不符合 schema", "action does not match the schema"), issues: parsed.error.issues }, 400);
   }
 
   const action = parsed.data as Action;
@@ -109,7 +110,7 @@ async function handleDecide(req: Request, opts: PipelineOptions): Promise<Respon
     return json(result.decision);
   } catch {
     // 与 /hook 同一条规矩:网关自己出错时回 ask,不把降级方向外包给调用方
-    return json(neutralDecision("网关内部错误"));
+    return json(neutralDecision(t("网关内部错误", "zgate internal error")));
   }
 }
 
@@ -122,12 +123,12 @@ async function handleHook(req: Request, opts: PipelineOptions, pending: PendingA
   try {
     body = await req.json();
   } catch {
-    return json(neutralResponse("网关无法解析本次请求"));
+    return json(neutralResponse(t("网关无法解析本次请求", "zgate could not parse this request")));
   }
 
   const event = parseHookEvent(body);
   if (event === null) {
-    return json(neutralResponse("网关无法识别本次调用"));
+    return json(neutralResponse(t("网关无法识别本次调用", "zgate did not recognize this call")));
   }
   if (event.kind !== "PreToolUse") return json(observe(event, pending));
   return handlePreToolUse(event.input, opts, pending);
@@ -193,7 +194,7 @@ async function handlePreToolUse(input: HookInput, opts: PipelineOptions, pending
   try {
     actions = toActions(input, turnId);
   } catch {
-    return json(neutralResponse("网关解析调用参数失败"));
+    return json(neutralResponse(t("网关解析调用参数失败", "zgate failed to parse the tool input")));
   }
 
   // 空数组 = 没有要裁决的东西(Task,或 Bash 缺 command):直接放行,不记日志,免得日志被空动作灌满。
@@ -220,7 +221,7 @@ async function handlePreToolUse(input: HookInput, opts: PipelineOptions, pending
     }
     return json(toHookResponse(result.decision));
   } catch {
-    return json(neutralResponse("网关内部错误"));
+    return json(neutralResponse(t("网关内部错误", "zgate internal error")));
   }
 }
 
@@ -230,15 +231,15 @@ async function handleOutcome(req: Request): Promise<Response> {
   try {
     body = await req.json();
   } catch {
-    return json({ error: "body 不是合法 JSON" }, 400);
+    return json({ error: t("body 不是合法 JSON", "body is not valid JSON") }, 400);
   }
   if (typeof body !== "object" || body === null) {
-    return json({ error: "body 必须是对象" }, 400);
+    return json({ error: t("body 必须是对象", "body must be an object") }, 400);
   }
   const o = body as Record<string, unknown>;
   const decisionId = o["decision_id"];
   if (typeof decisionId !== "string" || decisionId === "") {
-    return json({ error: "decision_id 必须是非空字符串" }, 400);
+    return json({ error: t("decision_id 必须是非空字符串", "decision_id must be a non-empty string") }, 400);
   }
 
   const outcome = OutcomeSchema.safeParse({
@@ -246,7 +247,7 @@ async function handleOutcome(req: Request): Promise<Response> {
     tool_succeeded: o["tool_succeeded"] ?? null,
   });
   if (!outcome.success) {
-    return json({ error: "outcome 字段不合法", issues: outcome.error.issues }, 400);
+    return json({ error: t("outcome 字段不合法", "invalid outcome fields"), issues: outcome.error.issues }, 400);
   }
 
   recordOutcome(decisionId, outcome.data as Outcome);
@@ -264,10 +265,10 @@ async function handleOpencode(req: Request, opts: PipelineOptions, pending: Pend
   try {
     body = await req.json();
   } catch {
-    return json(neutralDecision("网关无法解析本次请求"));
+    return json(neutralDecision(t("网关无法解析本次请求", "zgate could not parse this request")));
   }
   const event = parseOpencodeEvent(body);
-  if (event === null) return json(neutralDecision("网关无法识别本次调用"));
+  if (event === null) return json(neutralDecision(t("网关无法识别本次调用", "zgate did not recognize this call")));
   if (event.kind !== "before") return json(observeOpencode(event, pending));
 
   const turnId = crypto.randomUUID();
@@ -275,7 +276,7 @@ async function handleOpencode(req: Request, opts: PipelineOptions, pending: Pend
   try {
     actions = toActionsOpencode(event, turnId);
   } catch {
-    return json(neutralDecision("网关解析调用参数失败"));
+    return json(neutralDecision(t("网关解析调用参数失败", "zgate failed to parse the tool input")));
   }
   if (actions.length === 0) {
     return json({ verdict: "allow", reason: "", source: "rule", rule_id: null, confidence: null, latency_ms: 0, decision_id: turnId });
@@ -293,7 +294,7 @@ async function handleOpencode(req: Request, opts: PipelineOptions, pending: Pend
     }
     return json(result.decision);
   } catch {
-    return json(neutralDecision("网关内部错误"));
+    return json(neutralDecision(t("网关内部错误", "zgate internal error")));
   }
 }
 
@@ -357,19 +358,19 @@ export function createServer(config: ServerConfig = defaultConfig()) {
       const path = url.pathname;
 
       if (path === "/healthz") {
-        return req.method === "GET" ? handleHealthz(config) : json({ error: "只支持 GET" }, 405);
+        return req.method === "GET" ? handleHealthz(config) : json({ error: t("只支持 GET", "only GET is supported") }, 405);
       }
       if (path === "/decide") {
-        return req.method === "POST" ? handleDecide(req, opts) : json({ error: "只支持 POST" }, 405);
+        return req.method === "POST" ? handleDecide(req, opts) : json({ error: t("只支持 POST", "only POST is supported") }, 405);
       }
       if (path === "/hook/claude-code") {
-        return req.method === "POST" ? handleHook(req, opts, pending) : json({ error: "只支持 POST" }, 405);
+        return req.method === "POST" ? handleHook(req, opts, pending) : json({ error: t("只支持 POST", "only POST is supported") }, 405);
       }
       if (path === "/hook/opencode") {
-        return req.method === "POST" ? handleOpencode(req, opts, pending) : json({ error: "只支持 POST" }, 405);
+        return req.method === "POST" ? handleOpencode(req, opts, pending) : json({ error: t("只支持 POST", "only POST is supported") }, 405);
       }
       if (path === "/outcome") {
-        return req.method === "POST" ? handleOutcome(req) : json({ error: "只支持 POST" }, 405);
+        return req.method === "POST" ? handleOutcome(req) : json({ error: t("只支持 POST", "only POST is supported") }, 405);
       }
       return json({ error: "not found" }, 404);
     },

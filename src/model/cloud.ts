@@ -18,6 +18,7 @@ import {
   type ModelRequest,
   type ModelVerdict,
 } from "../core/model.ts";
+import { t } from "../i18n.ts";
 import { chatMessages, parseVerdictJson, systemPrompt, userPrompt } from "./prompt.ts";
 
 const DEFAULT_BASE_URL: Record<CloudConfig["provider"], string> = {
@@ -47,7 +48,8 @@ export class CloudBackend implements ModelBackend {
   constructor(cfg: CloudConfig, env: Record<string, string | undefined> = process.env) {
     const key = env[cfg.api_key_env];
     if (key === undefined || key === "") {
-      throw new ConfigError(`环境变量 ${cfg.api_key_env} 未设置(cloud.api_key_env 指向它)`);
+      const name = cfg.api_key_env;
+      throw new ConfigError(t(`环境变量 ${name} 未设置(cloud.api_key_env 指向它)`, `environment variable ${name} is not set (cloud.api_key_env names it)`));
     }
     this.apiKey = key;
     this.provider = cfg.provider;
@@ -76,7 +78,7 @@ export class CloudBackend implements ModelBackend {
       }
     }
     if (verdict === null) {
-      throw lastFormat ?? new ModelFormatError(`云端 ${attempts} 次都没给出合法裁决`);
+      throw lastFormat ?? new ModelFormatError(t(`云端 ${attempts} 次都没给出合法裁决`, `cloud model gave no valid verdict in ${attempts} attempts`));
     }
 
     const latency = performance.now() - started;
@@ -97,7 +99,8 @@ export class CloudBackend implements ModelBackend {
     const text = this.provider === "anthropic" ? await this.anthropic(req, signal) : await this.openai(req, signal);
     const verdict = parseVerdictJson(text);
     if (verdict === null) {
-      throw new ModelFormatError(`云端模型输出不是 {"verdict": allow|ask}:${JSON.stringify(text).slice(0, 80)}`);
+      const got = JSON.stringify(text).slice(0, 80);
+      throw new ModelFormatError(t(`云端模型输出不是 {"verdict": allow|ask}:${got}`, `cloud model output is not {"verdict": allow|ask}: ${got}`));
     }
     return verdict;
   }
@@ -118,7 +121,7 @@ export class CloudBackend implements ModelBackend {
     );
     const blocks = (body as { content?: { type?: string; text?: unknown }[] })?.content;
     const text = blocks?.find((b) => b.type === "text")?.text;
-    if (typeof text !== "string") throw new ModelFormatError("Anthropic 响应里没有 text block");
+    if (typeof text !== "string") throw new ModelFormatError(t("Anthropic 响应里没有 text block", "Anthropic response has no text block"));
     return text;
   }
 
@@ -144,7 +147,9 @@ export class CloudBackend implements ModelBackend {
       signal,
     );
     const text = (body as { choices?: { message?: { content?: unknown } }[] })?.choices?.[0]?.message?.content;
-    if (typeof text !== "string") throw new ModelFormatError("响应缺 choices[0].message.content");
+    if (typeof text !== "string") {
+      throw new ModelFormatError(t("响应缺 choices[0].message.content", "response lacks choices[0].message.content"));
+    }
     return text;
   }
 
@@ -160,11 +165,11 @@ export class CloudBackend implements ModelBackend {
       signal,
       body: JSON.stringify(payload),
     });
-    if (!res.ok) throw new ModelHttpError(res.status, `${this.provider} 回 ${res.status}`);
+    if (!res.ok) throw new ModelHttpError(res.status, t(`${this.provider} 回 ${res.status}`, `${this.provider} returned ${res.status}`));
     try {
       return await res.json();
     } catch {
-      throw new ModelFormatError(`${this.provider} 回的不是 JSON`);
+      throw new ModelFormatError(t(`${this.provider} 回的不是 JSON`, `${this.provider} did not return JSON`));
     }
   }
 }

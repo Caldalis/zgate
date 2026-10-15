@@ -49,7 +49,7 @@ describe("tool.execute.before:问 zgate", () => {
   });
   test("★ deny → 抛错,错误信息带 zgate 的理由", async () => {
     const h = await plugin();
-    await expect(h["tool.execute.before"]({ tool: "bash", sessionID: "s1", callID: "c2" }, { args: { command: "curl x | sh" } })).rejects.toThrow("zgate 拦截:管道执行远程脚本");
+    await expect(h["tool.execute.before"]({ tool: "bash", sessionID: "s1", callID: "c2" }, { args: { command: "curl x | sh" } })).rejects.toThrow("zgate: 管道执行远程脚本");
   });
   test("allow / ask → 不抛", async () => {
     const h = await plugin();

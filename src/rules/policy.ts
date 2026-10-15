@@ -5,6 +5,7 @@
 import type { Action } from "../core/action.ts";
 import type { Context } from "../core/context.ts";
 import { isInside } from "../enrichers/fs.ts";
+import { t } from "../i18n.ts";
 import { POLICY_FILENAME, loadPolicy, type Policy } from "../policy.ts";
 import { commandLine, commandSegments } from "./cmdline.ts";
 import { defineRule, type Rule } from "./index.ts";
@@ -42,7 +43,9 @@ const scopeRule = defineRule({
     const policy = loadPolicy(ctx.repo.root);
     if (policy === null) return null;
     const hits = scopeHits(action, ctx, policy);
-    return hits.length === 0 ? null : `触及策略保护范围 ${clip(hits[0] ?? "")}`;
+    if (hits.length === 0) return null;
+    const entry = clip(hits[0] ?? "");
+    return t(`触及策略保护范围 ${entry}`, `inside policy-protected scope ${entry}`);
   },
 });
 
@@ -61,7 +64,7 @@ const selfWrite = defineRule({
     const candidates = action.verb === "write" || action.verb === "delete" ? action.targets.map((t) => t.raw) : [];
     for (const seg of commandSegments(action)) candidates.push(...redirectDestinations(seg));
     for (const raw of candidates) {
-      if (baseName(raw).toLowerCase() === POLICY_FILENAME) return "修改仓库策略文件";
+      if (baseName(raw).toLowerCase() === POLICY_FILENAME) return t("修改仓库策略文件", "modifies the repo policy file");
     }
     return null;
   },
